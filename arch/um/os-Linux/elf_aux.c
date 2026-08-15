@@ -16,6 +16,10 @@
 #include "internal.h"
 #include <linux/swab.h>
 
+#ifndef AT_MINSIGSTKSZ
+#define AT_MINSIGSTKSZ 51
+#endif
+
 #if __BITS_PER_LONG == 64
 typedef Elf64_auxv_t elf_auxv_t;
 #else
@@ -25,6 +29,28 @@ typedef Elf32_auxv_t elf_auxv_t;
 /* These are initialized very early in boot and never changed */
 char * elf_aux_platform;
 long elf_aux_hwcap;
+
+/*
+ * AT_MINSIGSTKSZ: the smallest alternate signal stack this host will accept as
+ * sufficient, published by the kernel because on some architectures it is not a
+ * constant.
+ *
+ * It is not a constant on arm64. setup_sigframe_layout() sizes a signal frame
+ * from what the CPU supports and from what the signalled task has executed --
+ * an SVE record scales with the vector length, and SME adds za and zt records
+ * on top. Two run domains differing only in -cpu report 4720 and 9984 here,
+ * for the same architecture and the same kernel.
+ *
+ * UML cares because the stub takes its signals on an alternate stack that is a
+ * fixed-size member of struct stub_data, and the frame written there is sized
+ * by the host, not by UML. Anything that reasons about that buffer must reason
+ * from this number rather than from a measurement taken on one machine; see
+ * check_stub_sigstack().
+ *
+ * Zero if the host does not publish it (arm64 does since 5.5, x86 since
+ * 5.14).
+ */
+long elf_aux_min_sigstack;
 
 __init void scan_elf_aux( char **envp)
 {
@@ -36,6 +62,9 @@ __init void scan_elf_aux( char **envp)
 		switch ( auxv->a_type ) {
 			case AT_HWCAP:
 				elf_aux_hwcap = auxv->a_un.a_val;
+				break;
+			case AT_MINSIGSTKSZ:
+				elf_aux_min_sigstack = auxv->a_un.a_val;
 				break;
 			case AT_PLATFORM:
                                 /* elf.h removed the pointer elements from
