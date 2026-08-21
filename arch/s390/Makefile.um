@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# s390x backend build glue for UML (ARCH=um, SUBARCH=s390).
+# Mirrors arch/x86/Makefile.um's role: image layout, linker emulation,
+# backend cflags. Surfaces arrive with the port in dependency order
+# (M3b sequencing, per DESIGN-um-s390x §2): the build refuses at the
+# first unwritten surface; x86/arm64 cannot break.
+#
+# START: 0x60000000 — the x86_64/arm64 UML convention. The s390 host
+# maps libc around 0x3ff_xxxxxxxx (box-verified), leaving the low
+# half of user VA free for the UML image + stub. [P8]
+START := 0x60000000
+# Optional ccache masquerade: PATH=~/.ccache-bin:$PATH makes
+# s390x-linux-gnu-gcc resolve through ccache (kbuild's tool probes
+# stay on the real name; CC="ccache ..." breaks them).
+
+
+ELF_ARCH	:= s390
+ELF_FORMAT	:= elf64-s390
+CHECKFLAGS	+= -D__s390__ -D__s390x__
+
+# Cross builds from a non-s390 seat: the extracted cross gcc lacks
+# the multiarch system-include glue, so <sys/ucontext.h> and
+# <asm/unistd.h> in %_user.o objects resolve to the build seat's
+# x86_64 headers (wrong layout AND wrong syscall numbers). -isystem
+# puts the target's multiarch libc headers ahead of the host ones.
+# Kernel objects are unaffected (different flags variable).
+# NOTE: this file is included by arch/um/Makefile BEFORE it defines
+# USER_CFLAGS, so a USER_CFLAGS += here would be overwritten — the
+# flag must ride the ARCH_USER_CFLAGS hook the shared Makefile
+# appends after its USER_CFLAGS definition.
+ARCH_USER_CFLAGS = -isystem /usr/s390x-linux-gnu/include
