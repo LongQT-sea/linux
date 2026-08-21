@@ -5,7 +5,7 @@
 # surfaces in dependency order and each becomes an object here as it
 # is written (M3b bring-up, per DESIGN-um-s390x §2).
 
-obj-y =
+obj-y = setjmp_64.o
 
 $(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS)
 targets += user-offsets.s
