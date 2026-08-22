@@ -5,7 +5,7 @@
 # surfaces in dependency order and each becomes an object here as it
 # is written (M3b bring-up, per DESIGN-um-s390x §2).
 
-obj-y = os-Linux/ ptrace_user.o signal.o vdso/ setjmp_64.o stub_segv.o
+obj-y = ptrace.o delay.o os-Linux/ ptrace_user.o syscalls.o bugs.o fault.o sysrq.o signal.o tls.o vdso/ setjmp_64.o stub_segv.o cpuinfo.o
 
 $(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS)
 targets += user-offsets.s

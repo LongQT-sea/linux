@@ -53,6 +53,20 @@ long arch_ptrace(struct task_struct *child, long request,
 		ret = poke_user(child, addr, data);
 		break;
 
+#ifdef SUBARCH_SINGLESTEP_UNSUPPORTED
+	case PTRACE_SINGLESTEP:
+		/*
+		 * Backends whose host lane cannot honor PER
+		 * single-stepping (the s390 seccomp relay loses the
+		 * PER bit at the host sigreturn) must refuse instead
+		 * of silently stepping at syscall granularity via the
+		 * fake syscall-leave trap.
+		 */
+		ret = -EIO;
+		break;
+#endif
+
+
 	default:
 		ret = ptrace_request(child, request, addr, data);
 		if (ret == -EIO)
