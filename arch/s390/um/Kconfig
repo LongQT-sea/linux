@@ -7,6 +7,7 @@ config UML_S390
 	def_bool y
 	select UML_SUBARCH_MEMCPY
 	select CLONE_BACKWARDS2
+	select ARCH_WANT_IPC_PARSE_VERSION
 	help
 	  s390 passes clone(2) with the first two arguments swapped
 	  (stack first, then flags — arch/Kconfig "ABI hall of shame").
