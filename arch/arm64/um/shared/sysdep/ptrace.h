@@ -47,6 +47,28 @@
 #define UPT_PSTATE(r) REGS_PSTATE((r)->gp)
 
 #define UPT_SYSCALL_ARG1(r) ((r)->gp[HOST_ARG0])
+
+/*
+ * When to seed the return register with -ENOSYS before the
+ * syscall-entry trace stop (see handle_syscall()).
+ *
+ * x86 does it unconditionally, and that is faithful there: native x86
+ * really does leave -ENOSYS in RAX at an entry stop, and RAX is not an
+ * argument register. On arm64 the return value and the first argument
+ * are both x0, so seeding early makes a guest tracer reading the
+ * classic register view see 0xffffffffffffffda as argument 1 of every
+ * syscall; only tracers using PTRACE_GET_SYSCALL_INFO escape, because
+ * that routes through syscall_get_arguments() and the HOST_ARG0
+ * snapshot. (The syscall dispatch itself always reads HOST_ARG0, so
+ * the seed never corrupted arguments here; this is about what a guest
+ * tracer observes.)
+ *
+ * Native arm64 seeds before the stop in exactly one case: when the
+ * incoming number is already NO_SYSCALL, so that a tracer which skips
+ * the call without setting x0 still gets an error rather than a stale
+ * argument (arch/arm64/kernel/syscall.c). Match that.
+ */
+#define UM_SEED_ENOSYS_BEFORE_TRACE(r)	((long)UPT_SYSCALL_NR(r) < 0)
 #define UPT_SYSCALL_ARG2(r) ((r)->gp[HOST_X1])
 #define UPT_SYSCALL_ARG3(r) ((r)->gp[HOST_X2])
 #define UPT_SYSCALL_ARG4(r) ((r)->gp[HOST_X3])
