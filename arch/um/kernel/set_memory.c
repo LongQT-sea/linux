@@ -112,3 +112,19 @@ void uml_text_poke_fixup(unsigned long addr, size_t len, bool writable)
 	else
 		os_protect_memory((void *)start, end - start, 1, 0, 1);
 }
+
+/*
+ * Write to kernel text (the BPF fentry attach/detach path). Unlike JIT
+ * images, kernel text is r-x from the host loader and is not in the ROX
+ * registry, so the writable window must be created here: flip the covered
+ * page(s) to RWX, copy, flip back to R-X.
+ */
+void uml_kernel_text_poke(void *addr, const void *opcode, size_t len)
+{
+	unsigned long start = (unsigned long)addr & PAGE_MASK;
+	unsigned long end = PAGE_ALIGN((unsigned long)addr + len);
+
+	os_protect_memory((void *)start, end - start, 1, 1, 1);
+	memcpy(addr, opcode, len);
+	os_protect_memory((void *)start, end - start, 1, 0, 1);
+}

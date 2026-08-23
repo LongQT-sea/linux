@@ -19,4 +19,7 @@ int set_memory_nx(unsigned long addr, int numpages);
 /* text_poke writable-window helper (ROX'd JIT/trampoline ranges only) */
 void uml_text_poke_fixup(unsigned long addr, size_t len, bool writable);
 
+/* write to (host r-x) kernel text, e.g. the BPF fentry patch sites */
+void uml_kernel_text_poke(void *addr, const void *opcode, size_t len);
+
 #endif /* _ASM_UM_SET_MEMORY_H */

@@ -33,6 +33,7 @@ obj-$(CONFIG_SMP) += smp.o
 obj-y += set_memory.o
 obj-y += execmem.o
 obj-$(CONFIG_BPF_JIT) += bpf_jit_shim.o
+obj-$(CONFIG_FUNCTION_TRACER) += ftrace_stub.o
 
 USER_OBJS := config.o
 
