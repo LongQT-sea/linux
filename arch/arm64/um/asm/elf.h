@@ -13,7 +13,7 @@
 
 #define CORE_DUMP_USE_REGSET
 
-#define R_AARCH64_NONE		0
+#define R_AARCH64_NONE		256
 #define R_AARCH64_ABS64		257
 #define R_AARCH64_ABS32		258
 #define R_AARCH64_ABS16		259
