@@ -134,19 +134,28 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 
 				stub_data = (void *)mm_context->id.stack;
 				stub_data->futex = FUTEX_IN_KERN;
-#if IS_ENABLED(CONFIG_SMP)
-				os_futex_wake(&stub_data->futex);
-#else
 				/*
-				 * On !SMP the wake is skipped: a futex
-				 * waiter in wait_stub_done_seccomp() is
-				 * rescued by a signal interrupting its
-				 * wait (EINTR) or by the bounded-wait
-				 * liveness probe there (pidfd poll on
-				 * timeout), which turns a dead stub
-				 * into a loud failure either way.
+				 * Unconditional on purpose -- the waiter-bit
+				 * wake elision must never be used on this
+				 * path. The waiter can be anywhere between
+				 * observing the word and parking, and a dead
+				 * stub will never issue another handoff to
+				 * correct a skipped wake: a spurious
+				 * FUTEX_WAKE here is noise, a missed one
+				 * leaves only the bounded-wait probe in
+				 * wait_stub_done_seccomp() (pidfd poll on
+				 * timeout) to catch the death, seconds
+				 * later. The plain store can race with the
+				 * waiter's fetch_or of its waiter bit; that
+				 * is fine, because FUTEX_WAIT revalidates
+				 * the value it was passed and this wake
+				 * always fires. The syscall also carries the
+				 * barrier the plain store lacks. (This was
+				 * SMP-only before the waiter bit existed;
+				 * now the wake is the one kick that works no
+				 * matter where the waiter is.)
 				 */
-#endif
+				os_futex_wake(&stub_data->futex);
 
 				/*
 				 * NOTE: Currently executing syscalls by

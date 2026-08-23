@@ -14,8 +14,31 @@
 #include <sysdep/stub-data.h>
 #include <mm_id.h>
 
+/*
+ * The stub <-> kernel handoff word. The low bit names the side that currently
+ * owns the CPU ("the child may run" / "the kernel may run"); ownership strictly
+ * ping-pongs, so at any moment at most one side is waiting.
+ */
 #define FUTEX_IN_CHILD 0
 #define FUTEX_IN_KERN 1
+/*
+ * ORed in by a waiter that is about to park in FUTEX_WAIT. A waker hands
+ * ownership over with an atomic exchange and calls FUTEX_WAKE only if the old
+ * value carried this bit: a FUTEX_WAKE that actually has someone to wake costs
+ * a voluntary context switch on the host, and even an empty one is a syscall.
+ * When the peer has not parked (yet), the wake is pure waste.
+ *
+ * The bit can go stale in one benign way: the waiter sets it just after the
+ * waker's exchange already flipped ownership. The waiter then sees the flip in
+ * the fetch_or's old value and never parks, but the bit stays set until the
+ * next exchange clears it, costing that exchange one spurious FUTEX_WAKE.
+ * Rare and harmless; a scheme that cleans the bit up would need a second
+ * atomic on every wait, which is the common path.
+ */
+#define STUB_FUTEX_WAITER 2
+
+/* The ownership half of the protocol word, waiter bit masked off. */
+#define STUB_FUTEX_OWNER(v) ((v) & FUTEX_IN_KERN)
 
 struct stub_init_data {
 	int seccomp;
