@@ -311,6 +311,7 @@ static int userspace_tramp(void *data)
 	unsigned long long offset;
 	struct stub_init_data init_data = {
 		.seccomp = using_seccomp,
+		.arch_flags = stub_arch_init_flags,
 		.stub_start = STUB_START,
 	};
 	int ret;
@@ -442,6 +443,9 @@ static int __init init_stub_exe_fd(void)
 __initcall(init_stub_exe_fd);
 
 int using_seccomp;
+
+/* Backend-interpreted bits for stub_arch_init(); see skas.h. */
+unsigned long stub_arch_init_flags;
 
 /**
  * start_userspace() - prepare a new userspace process

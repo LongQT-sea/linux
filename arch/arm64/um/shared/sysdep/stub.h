@@ -224,4 +224,49 @@ static __always_inline void stub_seccomp_save_state(struct stub_data_arch *arch)
 	asm volatile ("mrs %0, TPIDR_EL0" : "=r" (arch->tls));
 }
 
+#ifndef PR_PAC_SET_ENABLED_KEYS
+#define PR_PAC_SET_ENABLED_KEYS	60
+#define PR_PAC_APIAKEY		(1UL << 0)
+#define PR_PAC_APIBKEY		(1UL << 1)
+#define PR_PAC_APDAKEY		(1UL << 2)
+#define PR_PAC_APDBKEY		(1UL << 3)
+#endif
+
+/*
+ * What this architecture settles inside a fresh stub, before the
+ * seccomp filter is installed: turn pointer authentication off, where
+ * the boot-time probe said that is an improvement.
+ *
+ * There is one stub per guest mm, so a guest fork() makes a new one,
+ * and a new stub is a new execve(), which makes the host generate
+ * fresh PAC keys and enable them. The child of a guest fork()
+ * therefore returns into a process whose APIAKey has nothing to do
+ * with the one that signed the return addresses already on its stack;
+ * glibc's _Fork is exactly that shape (paciasp, the clone, autiasp),
+ * and with FEAT_FPAC the failed authentication traps inside _Fork.
+ *
+ * Disabling the keys is consistent rather than a workaround: the port
+ * does not advertise HWCAP_PACA/PACG, so a guest told it has no
+ * pointer authentication should not run with keys enabled underneath.
+ * But it only helps on hosts that execute a disabled-key PAC hint as a
+ * NOP; others trap them instead, where disabling the keys would turn
+ * EVERY paciasp/autiasp pair into a SIGILL. os-Linux/pac.c probes
+ * which kind of host this is and sets STUB_INIT_PAC_OFF only on the
+ * first kind. The SIGILL emulation in arch/arm64/um/signal.c stays
+ * armed either way: retaa and friends are not in the HINT space and
+ * trap with the key disabled even on well-behaved hosts.
+ *
+ * Must run after the exec (the exec is what re-randomises and
+ * re-enables the keys) and before the seccomp filter is installed
+ * (prctl is not on the stub's allowlist).
+ */
+static __always_inline void stub_arch_init(unsigned long arch_flags)
+{
+	if (arch_flags & STUB_INIT_PAC_OFF)
+		stub_syscall5(__NR_prctl, PR_PAC_SET_ENABLED_KEYS,
+			      PR_PAC_APIAKEY | PR_PAC_APIBKEY |
+			      PR_PAC_APDAKEY | PR_PAC_APDBKEY,
+			      0 /* none enabled */, 0, 0);
+}
+
 #endif

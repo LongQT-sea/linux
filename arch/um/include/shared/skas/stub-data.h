@@ -20,6 +20,14 @@
 struct stub_init_data {
 	int seccomp;
 
+	/*
+	 * Backend-interpreted bits, consumed by stub_arch_init() in the
+	 * freshly exec'd stub before the seccomp filter is installed.
+	 * Filled from stub_arch_init_flags, which a backend's host
+	 * probe may set at boot (arm64: STUB_INIT_PAC_OFF).
+	 */
+	unsigned long arch_flags;
+
 	unsigned long stub_start;
 
 	int stub_code_fd;
