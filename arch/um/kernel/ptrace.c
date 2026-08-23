@@ -7,7 +7,6 @@
 #include <linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
-#include <asm/ptrace-abi.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
