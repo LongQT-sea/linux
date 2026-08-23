@@ -6,9 +6,10 @@
 # payloads.  They are static binaries: the guest root is a bare hostfs
 # directory with no libraries in it.
 
-TEST_PROGS := um_boot_test.sh um_core_test.sh um_module_test.sh
+TEST_PROGS := um_boot_test.sh um_core_test.sh um_module_test.sh \
+	      um_bench_test.sh
 TEST_FILES := um_lib.sh
-TEST_GEN_FILES := guest_init guest_core guest_module
+TEST_GEN_FILES := guest_init guest_core guest_module guest_bench
 
 CFLAGS += -O2 -Wall -static
 LDLIBS += -lpthread
