@@ -22,6 +22,8 @@
 
 #define STUB_MMAP_NR __NR_mmap
 
+#define UM_SA_RESTORER 0 /* arm64 has no SA_RESTORER; the kernel provides the sigreturn trampoline */
+
 /* TLS restore syscall the stub filter must allow (backend-provided) */
 #define STUB_TLS_SYSCALL_NR __NR_set_tls
 #define MMAP_OFFSET(o) (o)
@@ -185,5 +187,38 @@ extern void stub_segv_handler(int, siginfo_t *, void *);
 extern void stub_syscall_handler(void);
 extern void stub_signal_interrupt(int, siginfo_t *, void *);
 extern void stub_signal_restorer(void);
+
+/*
+ * arm64 has no SA_RESTORER: the host sets x30 to the VDSO's
+ * __kernel_rt_sigreturn, and that svc does not execute from the stub
+ * page: the seccomp filter TRAPs it, re-entering the handler until
+ * the ~4.7KB frames overflow the stub sigstack. Enter the in-stub
+ * restorer directly instead. ABI: the host enters the handler with
+ * SP pointing at the rt_sigframe, whose first member is the siginfo,
+ * so the handler's info argument is the frame address; restore SP
+ * from it and branch. (Neither a C tail call (GCC emits bl, leaving
+ * SP mid-frame) nor patching the saved LR (no frame pointer here)
+ * works; this is layout-independent.)
+ */
+static __always_inline void stub_signal_return(void *frame)
+{
+	asm volatile("mov sp, %0\n"
+		     "adr x9, stub_signal_restorer\n"
+		     "br x9"
+		     :: "r"(frame) : "x9", "memory");
+	__builtin_unreachable();
+}
+
+/*
+ * TPIDR_EL0 is EL0-writable and cannot be trapped, so unlike x86
+ * (which forces TLS through arch_prctl) the kernel never observes
+ * guest TLS writes. The trap handler runs with the guest's TPIDR
+ * intact; save it so get_stub_state can learn it and fork/resume
+ * can propagate it to new stubs.
+ */
+static __always_inline void stub_seccomp_save_state(struct stub_data_arch *arch)
+{
+	asm volatile ("mrs %0, TPIDR_EL0" : "=r" (arch->tls));
+}
 
 #endif

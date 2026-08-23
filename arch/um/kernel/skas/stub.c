@@ -117,6 +117,9 @@ stub_signal_interrupt(int sig, siginfo_t *info, void *p)
 	d->si_offset = (unsigned long)info - (unsigned long)&d->sigstack[0];
 	d->mctx_offset = (unsigned long)&uc->uc_mcontext - (unsigned long)&d->sigstack[0];
 
+	/* Save arch state the kernel cannot observe (arm64: TPIDR_EL0) */
+	stub_seccomp_save_state(&d->arch_data);
+
 restart_wait:
 	d->futex = FUTEX_IN_KERN;
 	do {
@@ -170,6 +173,7 @@ restart_wait:
 	stub_seccomp_restore_state(&d->arch_data);
 
 	/* Return so that the host modified mcontext is restored. */
+	stub_signal_return(info);
 }
 
 void __section(".__syscall_stub")
