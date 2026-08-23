@@ -71,4 +71,8 @@ struct uml_pt_regs {
 
 extern int arch_init_registers(int pid);
 
+/* Initial stack pointer for a new thread (x86 tolerates 8 alignment) */
+#define UM_THREAD_START_SP(stack) \
+	((unsigned long)(stack) + UM_THREAD_SIZE - sizeof(void *))
+
 #endif /* __SYSDEP_X86_PTRACE_H */
