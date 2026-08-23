@@ -18,6 +18,12 @@ config UML_X86
 	select HAVE_CMPXCHG_DOUBLE if 64BIT
 	select HAVE_ALIGNED_STRUCT_PAGE if 64BIT
 	select UML_SUBARCH_SUPPORTS_SMP if X86_CX8
+	# -pg -mfentry call sites + a ret-only __fentry__ stub give BPF
+	# fentry/fexit their patch sites (17 bytes under -mcmodel=large:
+	# endbr64 + movabs + indirect call); ftrace_location() stays 0
+	# (no HAVE_DYNAMIC_FTRACE*), so attach uses bpf_arch_text_poke.
+	select HAVE_FUNCTION_TRACER if 64BIT
+	select HAVE_FENTRY if 64BIT
 
 # UML/x86 reuses arch/x86/kernel/uprobes.c via subarch-y; the guest-user
 # int3/single-step relay arrives as SIGTRAP through the skas trap path.
