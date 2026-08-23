@@ -19,11 +19,26 @@
 #define UML_EXECMEM_BPF_START	0x50000000UL
 #define UML_EXECMEM_BPF_END	0x60000000UL
 
+/*
+ * kprobe out-of-line slots share the constraint: the boost path's
+ * trailing jmp rel32 must reach the probe site, and a vmalloc-range
+ * slot is out of reach once mem= is large. Give them the adjacent
+ * 256 MB window.
+ */
+#define UML_EXECMEM_KPROBES_START	0x40000000UL
+#define UML_EXECMEM_KPROBES_END	0x50000000UL
+
 static struct execmem_info um_execmem_info = {
 	.ranges = {
 		[EXECMEM_BPF] = {
 			.start		= UML_EXECMEM_BPF_START,
 			.end		= UML_EXECMEM_BPF_END,
+			.pgprot		= PAGE_KERNEL_EXEC,
+			.alignment	= 1,
+		},
+		[EXECMEM_KPROBES] = {
+			.start		= UML_EXECMEM_KPROBES_START,
+			.end		= UML_EXECMEM_KPROBES_END,
 			.pgprot		= PAGE_KERNEL_EXEC,
 			.alignment	= 1,
 		},

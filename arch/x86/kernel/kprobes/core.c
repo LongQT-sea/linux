@@ -473,6 +473,26 @@ int __copy_instruction(u8 *dest, u8 *src, u8 *real, struct insn *insn)
 }
 
 /* Prepare reljump or int3 right after instruction */
+/*
+ * Boosting appends a jmp rel32 from the out-of-line slot back to the
+ * instruction after the probe point; refuse it when the displacement
+ * does not fit s32, since __synthesize_relative_insn() would truncate
+ * silently. This cannot trigger on native x86 (the slot area is
+ * allocated within rel32 reach of kernel and module text), but on UML
+ * the EXECMEM_KPROBES window is only guaranteed reachable from the
+ * kernel image, and probes in modules (vmalloc space) can be farther
+ * away; those fall back to the int3 single-step, which is
+ * distance-immune.
+ */
+static bool boost_jump_in_reach(struct kprobe *p, struct insn *insn)
+{
+	s64 disp = (s64)(unsigned long)(p->addr + insn->length) -
+		   (s64)(unsigned long)(p->ainsn.insn + insn->length +
+					JMP32_INSN_SIZE);
+
+	return (s64)(s32)disp == disp;
+}
+
 static int prepare_singlestep(kprobe_opcode_t *buf, struct kprobe *p,
 			      struct insn *insn)
 {
@@ -480,7 +500,8 @@ static int prepare_singlestep(kprobe_opcode_t *buf, struct kprobe *p,
 
 	if (!IS_ENABLED(CONFIG_PREEMPTION) &&
 	    !p->post_handler && can_boost(insn, p->addr) &&
-	    MAX_INSN_SIZE - len >= JMP32_INSN_SIZE) {
+	    MAX_INSN_SIZE - len >= JMP32_INSN_SIZE &&
+	    boost_jump_in_reach(p, insn)) {
 		/*
 		 * These instructions can be executed directly if it
 		 * jumps back to correct address.
