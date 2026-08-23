@@ -28,6 +28,7 @@
 #include <registers.h>
 #include <skas.h>
 #include <sysdep/stub.h>
+#include <stub-futex.h>
 #include <sysdep/mcontext.h>
 #include <linux/futex.h>
 #include <linux/threads.h>
@@ -140,6 +141,7 @@ static bool stub_is_dead(int pid)
 void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 {
 	struct stub_data *data = (void *)mm_idp->stack;
+	unsigned int futex_val;
 	int ret;
 
 	do {
@@ -177,12 +179,30 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 			}
 
 			data->signal = 0;
-			data->futex = FUTEX_IN_CHILD;
-			CATCH_EINTR(syscall(__NR_futex, &data->futex,
-					    FUTEX_WAKE, 1, NULL, NULL, 0));
+			/*
+			 * The exchange's release ordering publishes signal and
+			 * syscall_data before the stub can observe the flip;
+			 * the returned old value elides the FUTEX_WAKE when
+			 * the stub had not parked (yet).
+			 */
+			if (stub_futex_hand_over(&data->futex, FUTEX_IN_CHILD))
+				CATCH_EINTR(syscall(__NR_futex, &data->futex,
+						    FUTEX_WAKE, 1, NULL, NULL, 0));
 		}
 
-		do {
+		/*
+		 * Going to sleep: advertise it via the waiter bit so the
+		 * stub's handoff knows to send a wake. The fetch_or returns
+		 * the old value, so a flip that already happened is seen here
+		 * and skips the wait entirely.
+		 */
+		futex_val = stub_futex_load_acquire(&data->futex);
+		if (STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_CHILD)
+			futex_val = stub_futex_fetch_or(&data->futex,
+							STUB_FUTEX_WAITER) |
+				STUB_FUTEX_WAITER;
+
+		while (STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_CHILD) {
 			struct timespec ts = { .tv_sec = 5 };
 			int pid;
 
@@ -201,21 +221,24 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 			if (pid < 0)
 				goto out_kill;
 
+			/*
+			 * The expected value is the freshly observed one, not
+			 * the constant: if the stub (or the death path in
+			 * mm_sigchld_irq) flipped the word between the read
+			 * and this call, FUTEX_WAIT returns EAGAIN instead of
+			 * sleeping through the wake, and the acquire re-read
+			 * below picks the flip up.
+			 */
 			ret = syscall(__NR_futex, &data->futex,
-				      FUTEX_WAIT, FUTEX_IN_CHILD,
+				      FUTEX_WAIT, futex_val,
 				      &ts, NULL, 0);
 			if (ret < 0 && errno == ETIMEDOUT) {
 				/*
-				 * Bounded-wait backstop: on !SMP the
-				 * futex wake in mm_sigchld_irq() is
-				 * compiled out, so a dead stub is only
-				 * noticed here if a signal happens to
-				 * interrupt the wait (EINTR) and its
-				 * IRQ gets to run; without that rescue
-				 * the guest hangs here forever. Probe
-				 * the stub; only a genuinely dead one
-				 * breaks the wait, so this can never
-				 * fire spuriously.
+				 * Bounded-wait backstop: should a wake be
+				 * lost for any reason, a dead stub must not
+				 * become a silent hang. Probe the stub; only
+				 * a genuinely dead one breaks the wait, so
+				 * this can never fire spuriously.
 				 */
 				if (stub_is_dead(pid)) {
 					printk(UM_KERN_ERR "%s : stub pid %d died during futex wait\n",
@@ -223,14 +246,14 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 					goto out_kill;
 				}
 				/* Alive but slow to answer; keep waiting. */
-				continue;
-			}
-			if (ret < 0 && errno != EINTR && errno != EAGAIN) {
+			} else if (ret < 0 && errno != EINTR && errno != EAGAIN) {
 				printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
 				       __func__, errno);
 				goto out_kill;
 			}
-		} while (data->futex == FUTEX_IN_CHILD);
+
+			futex_val = stub_futex_load_acquire(&data->futex);
+		}
 
 		if (__READ_ONCE(mm_idp->pid) < 0)
 			goto out_kill;

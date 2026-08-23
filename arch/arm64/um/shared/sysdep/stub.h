@@ -151,6 +151,69 @@ static __always_inline void trap_myself(void)
 }
 
 /*
+ * Handoff-word atomics for <stub-futex.h>.
+ *
+ * These carry the ordering the elided futex syscalls used to provide. On this
+ * architecture that is a real obligation, not a formality: without the
+ * acquire on the load, a reader that observes the ownership flip may still
+ * read stale syscall_data or signal fields, a failure x86-TSO testing
+ * structurally cannot reproduce. Hence LDAR for the load and LDAXR/STLXR
+ * pairs for the read-modify-writes, giving them acquire+release semantics by
+ * construction.
+ *
+ * Hand-written rather than the compiler builtins because -moutline-atomics
+ * (default on arm64) turns __atomic_* into libgcc helper calls, and a call
+ * out of .__syscall_stub lands nowhere once the stub page is copied to
+ * STUB_CODE.
+ */
+static __always_inline unsigned int
+stub_futex_load_acquire(volatile unsigned int *addr)
+{
+	unsigned int val;
+
+	__asm__ volatile("ldar	%w0, [%1]"
+		: "=r" (val)
+		: "r" (addr)
+		: "memory");
+
+	return val;
+}
+#define stub_futex_load_acquire stub_futex_load_acquire
+
+static __always_inline unsigned int
+stub_futex_xchg(volatile unsigned int *addr, unsigned int val)
+{
+	unsigned int old, fail;
+
+	__asm__ volatile(
+		"1:	ldaxr	%w0, [%2]\n"
+		"	stlxr	%w1, %w3, [%2]\n"
+		"	cbnz	%w1, 1b\n"
+		: "=&r" (old), "=&r" (fail)
+		: "r" (addr), "r" (val)
+		: "memory");
+
+	return old;
+}
+
+static __always_inline unsigned int
+stub_futex_fetch_or(volatile unsigned int *addr, unsigned int bits)
+{
+	unsigned int old, newval, fail;
+
+	__asm__ volatile(
+		"1:	ldaxr	%w0, [%3]\n"
+		"	orr	%w1, %w0, %w4\n"
+		"	stlxr	%w2, %w1, [%3]\n"
+		"	cbnz	%w2, 1b\n"
+		: "=&r" (old), "=&r" (newval), "=&r" (fail)
+		: "r" (addr), "r" (bits)
+		: "memory");
+
+	return old;
+}
+
+/*
  * The stub data page sits directly above the stub code page; adrp
  * yields the current page, add one page size.
  */
