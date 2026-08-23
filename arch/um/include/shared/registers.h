@@ -8,7 +8,7 @@
 
 #include <sysdep/ptrace.h>
 
-extern unsigned long exec_regs[MAX_REG_NR];
+extern unsigned long exec_regs[UM_GP_SLOTS];
 extern unsigned long *exec_fp_regs;
 
 extern int init_pid_registers(int pid);

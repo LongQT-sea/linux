@@ -65,7 +65,11 @@ static inline unsigned long *check_init_stack(struct mm_id * mm_idp,
 	return stack;
 }
 
-static unsigned long syscall_regs[MAX_REG_NR];
+/*
+ * Sized like exec_regs (UM_GP_SLOTS): get_safe_registers() copies the
+ * backend's full gp frame, internal slots included, into this buffer.
+ */
+static unsigned long syscall_regs[UM_GP_SLOTS];
 
 static int __init init_syscall_regs(void)
 {

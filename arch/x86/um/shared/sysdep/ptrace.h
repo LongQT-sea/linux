@@ -8,6 +8,13 @@
 #define MAX_REG_OFFSET (UM_FRAME_SIZE)
 #define MAX_REG_NR ((MAX_REG_OFFSET) / sizeof(unsigned long))
 
+/*
+ * Full gp-frame size in unsigned longs. x86 has no UML-internal slots
+ * past the ABI frame (user_regs_struct already carries ORIG_RAX);
+ * shared-core gp[] buffers size off this, never off MAX_REG_NR.
+ */
+#define UM_GP_SLOTS (MAX_REG_NR)
+
 #define REGS_IP(r) ((r)[HOST_IP])
 #define REGS_SP(r) ((r)[HOST_SP])
 #define REGS_EFLAGS(r) ((r)[HOST_EFLAGS])
@@ -47,7 +54,7 @@
 extern unsigned long host_fp_size;
 
 struct uml_pt_regs {
-	unsigned long gp[MAX_REG_NR];
+	unsigned long gp[UM_GP_SLOTS];
 	struct faultinfo faultinfo;
 	long syscall;
 	int is_user;
