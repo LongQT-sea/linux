@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Selftests for User Mode Linux.
+#
+# The shell tests boot a UML binary (built separately with ARCH=um) and
+# take its path from $UML_BIN, so this Makefile only builds the guest
+# payloads.  They are static binaries: the guest root is a bare hostfs
+# directory with no libraries in it.
+
+TEST_PROGS := um_boot_test.sh
+TEST_FILES := um_lib.sh
+TEST_GEN_FILES := guest_init
+
+CFLAGS += -O2 -Wall -static
+LDLIBS += -lpthread
+
+include ../lib.mk
+
+$(TEST_GEN_FILES): $(OUTPUT)/%: %.c um_guest.h
+	$(call msg,CC,,$@)
+	$(Q)$(CC) $(CFLAGS) $< $(LDLIBS) -o $@
