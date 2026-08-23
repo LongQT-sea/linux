@@ -10,5 +10,8 @@ config UML_ARM64
 config GENERIC_HWEIGHT
 	def_bool y
 
+config GENERIC_CSUM
+	def_bool y
+
 config 64BIT
 	def_bool y
