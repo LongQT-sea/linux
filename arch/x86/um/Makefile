@@ -39,6 +39,13 @@ subarch-$(CONFIG_BPF_JIT) += ../net/bpf_jit_comp.o ../entry/clearbhb.o ../lib/no
 
 subarch-$(CONFIG_UPROBES) += ../kernel/uprobes.o ../lib/insn.o ../lib/inat.o
 
+# kprobes reuse the same decoder objects uprobes wire in; core.o
+# references x86_nops unconditionally, so nops.o must ride along even
+# when neither UPROBES nor BPF_JIT pulled it in (kbuild dedupes the
+# object lists).
+subarch-$(CONFIG_KPROBES) += ../kernel/kprobes/core.o ../lib/nops.o
+subarch-$(CONFIG_KPROBES) += $(if $(CONFIG_UPROBES),,../lib/insn.o ../lib/inat.o)
+
 # inat.c includes the generated inat-tables.c via a quoted include; the
 # table is generated into $(objtree)/arch/x86/lib by arch/um/Makefile,
 # which quoted includes only find in-tree. Make O= builds find it too.

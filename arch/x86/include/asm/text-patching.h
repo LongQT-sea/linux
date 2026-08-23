@@ -131,11 +131,29 @@ extern int after_bootmem;
 extern __ro_after_init struct mm_struct *text_poke_mm;
 extern __ro_after_init unsigned long text_poke_mm_addr;
 
-#ifndef CONFIG_UML_X86
+/*
+ * The int3 emulation helpers below are also used by UML, which reuses the
+ * x86 kprobes core. UML's struct pt_regs has no named register fields, so
+ * the register accesses go through one set of accessor macros; the
+ * emulation logic itself is identical on both. The guest kernel stack is
+ * ordinary in-process memory under UML, so the pushes and pops below are
+ * plain stores there and the entry_64.S stack-gap comment does not apply.
+ */
+#ifdef CONFIG_UML_X86
+#include <uapi/asm/processor-flags.h>
+#define __int3_regs_ip(regs)	PT_REGS_IP(regs)
+#define __int3_regs_sp(regs)	PT_REGS_SP(regs)
+#define __int3_regs_flags(regs)	PT_REGS_EFLAGS(regs)
+#else
+#define __int3_regs_ip(regs)	((regs)->ip)
+#define __int3_regs_sp(regs)	((regs)->sp)
+#define __int3_regs_flags(regs)	((regs)->flags)
+#endif
+
 static __always_inline
 void int3_emulate_jmp(struct pt_regs *regs, unsigned long ip)
 {
-	regs->ip = ip;
+	__int3_regs_ip(regs) = ip;
 }
 
 static __always_inline
@@ -151,15 +169,15 @@ void int3_emulate_push(struct pt_regs *regs, unsigned long val)
 	 * (any) hardware exception and pt_regs; see the
 	 * FIXUP_FRAME macro.
 	 */
-	regs->sp -= sizeof(unsigned long);
-	*(unsigned long *)regs->sp = val;
+	__int3_regs_sp(regs) -= sizeof(unsigned long);
+	*(unsigned long *)__int3_regs_sp(regs) = val;
 }
 
 static __always_inline
 unsigned long int3_emulate_pop(struct pt_regs *regs)
 {
-	unsigned long val = *(unsigned long *)regs->sp;
-	regs->sp += sizeof(unsigned long);
+	unsigned long val = *(unsigned long *)__int3_regs_sp(regs);
+	__int3_regs_sp(regs) += sizeof(unsigned long);
 	return val;
 }
 
@@ -207,12 +225,10 @@ bool __emulate_cc(unsigned long flags, u8 cc)
 static __always_inline
 void int3_emulate_jcc(struct pt_regs *regs, u8 cc, unsigned long ip, unsigned long disp)
 {
-	if (__emulate_cc(regs->flags, cc))
+	if (__emulate_cc(__int3_regs_flags(regs), cc))
 		ip += disp;
 
 	int3_emulate_jmp(regs, ip);
 }
-
-#endif /* !CONFIG_UML_X86 */
 
 #endif /* _ASM_X86_TEXT_PATCHING_H */

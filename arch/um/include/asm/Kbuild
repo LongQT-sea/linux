@@ -22,7 +22,7 @@ generic-y += runtime-const.h
 generic-y += softirq_stack.h
 generic-y += switch_to.h
 generic-y += trace_clock.h
-generic-y += kprobes.h
+# kprobes.h: subarch-provided (arch/x86/um/asm), not generic
 generic-y += mm_hooks.h
 generic-y += vga.h
 generic-y += video.h
