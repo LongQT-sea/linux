@@ -18,6 +18,7 @@ VERSION {
 		__vdso_clock_gettime;
 		gettimeofday;
 		__vdso_gettimeofday;
+		__kernel_rt_sigreturn;
 	local: *;
 	};
 }
