@@ -1557,6 +1557,36 @@ static kprobe_opcode_t *kprobe_addr(struct kprobe *p)
 	return _kprobe_addr(p->addr, p->symbol_name, p->offset, &on_func_entry);
 }
 
+/**
+ * kprobe_on_func_entry() -- check whether given address is function entry
+ * @addr: Target address
+ * @sym:  Target symbol name
+ * @offset: The offset from the symbol or the address
+ *
+ * This checks whether the given @addr+@offset or @sym+@offset is on the
+ * function entry address or not.
+ * This returns 0 if it is the function entry, or -EINVAL if it is not.
+ * And also it returns -ENOENT if it fails the symbol or address lookup.
+ * Caller must pass @addr or @sym (either one must be NULL), or this
+ * returns -EINVAL.
+ *
+ * Lives outside the CONFIG_KRETPROBES region: trace_kprobe event
+ * creation calls this for plain kprobes too.
+ */
+int kprobe_on_func_entry(kprobe_opcode_t *addr, const char *sym, unsigned long offset)
+{
+	bool on_func_entry;
+	kprobe_opcode_t *kp_addr = _kprobe_addr(addr, sym, offset, &on_func_entry);
+
+	if (IS_ERR(kp_addr))
+		return PTR_ERR(kp_addr);
+
+	if (!on_func_entry)
+		return -EINVAL;
+
+	return 0;
+}
+
 /*
  * Check the 'p' is valid and return the aggregator kprobe
  * at the same address.
@@ -2227,33 +2257,6 @@ static void kretprobe_rethook_handler(struct rethook_node *rh, void *data,
 NOKPROBE_SYMBOL(kretprobe_rethook_handler);
 
 #endif /* !CONFIG_KRETPROBE_ON_RETHOOK */
-
-/**
- * kprobe_on_func_entry() -- check whether given address is function entry
- * @addr: Target address
- * @sym:  Target symbol name
- * @offset: The offset from the symbol or the address
- *
- * This checks whether the given @addr+@offset or @sym+@offset is on the
- * function entry address or not.
- * This returns 0 if it is the function entry, or -EINVAL if it is not.
- * And also it returns -ENOENT if it fails the symbol or address lookup.
- * Caller must pass @addr or @sym (either one must be NULL), or this
- * returns -EINVAL.
- */
-int kprobe_on_func_entry(kprobe_opcode_t *addr, const char *sym, unsigned long offset)
-{
-	bool on_func_entry;
-	kprobe_opcode_t *kp_addr = _kprobe_addr(addr, sym, offset, &on_func_entry);
-
-	if (IS_ERR(kp_addr))
-		return PTR_ERR(kp_addr);
-
-	if (!on_func_entry)
-		return -EINVAL;
-
-	return 0;
-}
 
 int register_kretprobe(struct kretprobe *rp)
 {

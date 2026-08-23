@@ -262,6 +262,20 @@ static inline int arch_trampoline_kprobe(struct kprobe *p)
 {
 	return 0;
 }
+/*
+ * trace_kprobe.c's kretprobe event handlers reference these
+ * unconditionally; without kretprobes they are unreachable (the
+ * register_kretprobe stub below fails), so compiling them is all
+ * that is needed.
+ */
+static nokprobe_inline struct kretprobe *get_kretprobe(struct kretprobe_instance *ri)
+{
+	return NULL;
+}
+static nokprobe_inline unsigned long get_kretprobe_retaddr(struct kretprobe_instance *ri)
+{
+	return 0;
+}
 #endif /* CONFIG_KRETPROBES */
 
 /* Markers of '_kprobe_blacklist' section */
