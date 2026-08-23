@@ -33,6 +33,13 @@ struct thread_struct {
 
 	void *segv_continue;
 
+	/*
+	 * Last trap number, equivalent of x86's thread.trap_nr. Only the
+	 * subarch-reused x86 uprobes code uses it (UPROBE_TRAP_NR sentinel);
+	 * um trap paths never set it, so it stays 0 elsewhere.
+	 */
+	unsigned long trap_nr;
+
 	/* Contains variable sized FP registers */
 	struct pt_regs regs;
 };

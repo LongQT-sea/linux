@@ -18,6 +18,7 @@
 #include <linux/cpu.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/uprobes.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
@@ -94,6 +95,8 @@ void interrupt_end(void)
 			do_signal(regs);
 		if (thread_flags & _TIF_NOTIFY_RESUME)
 			resume_user_mode_work(regs);
+		if (thread_flags & _TIF_UPROBE)
+			uprobe_notify_resume(regs);
 		thread_flags = read_thread_flags();
 	}
 }

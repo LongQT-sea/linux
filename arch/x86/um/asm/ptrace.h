@@ -98,6 +98,26 @@ extern long arch_prctl(struct task_struct *task, int option,
 
 #define user_stack_pointer(regs) PT_REGS_SP(regs)
 
+#define instruction_pointer_set(regs, val) (PT_REGS_IP(regs) = (val))
+
+/*
+ * regs_get_register() - get register value from its offset
+ * @regs:	pt_regs from which register value is gotten
+ * @offset:	offset of the register in pt_regs (i.e. in the uml_pt_regs
+ *		gp[] array, see regs_query_register_offset())
+ *
+ * If @offset is out of the gp[] register frame, this returns 0.
+ */
+static inline unsigned long regs_get_register(struct pt_regs *regs,
+					      unsigned int offset)
+{
+	if (unlikely(offset >= MAX_REG_OFFSET))
+		return 0;
+	return *(unsigned long *)((unsigned long)regs + offset);
+}
+
+extern int regs_query_register_offset(const char *name);
+
 extern void arch_switch_to(struct task_struct *to);
 
 #endif /* __UM_X86_PTRACE_H */

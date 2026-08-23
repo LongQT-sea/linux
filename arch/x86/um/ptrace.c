@@ -2,7 +2,10 @@
 
 #include <linux/sched.h>
 #include <linux/elf.h>
+#include <linux/errno.h>
+#include <linux/ptrace.h>
 #include <linux/regset.h>
+#include <linux/string.h>
 #include <asm/user32.h>
 #include <asm/sigcontext.h>
 
@@ -303,3 +306,61 @@ static int __init init_regset_xstate_info(void)
 	return 0;
 }
 arch_initcall(init_regset_xstate_info);
+
+/*
+ * Register name -> offset mapping for the probe-event fetch machinery
+ * (trace_uprobe et al.). Mirrors the native x86-64 table in
+ * arch/x86/kernel/ptrace.c, but offsets index um's uml_pt_regs gp[] array.
+ * "orig_ax" is omitted: its um equivalent (uml_pt_regs.syscall) lives
+ * outside gp[], beyond the MAX_REG_OFFSET bound of regs_get_register().
+ */
+struct pt_regs_offset {
+	const char *name;
+	int offset;
+};
+
+#define REG_OFFSET_NAME(n, r) \
+	{ .name = n, .offset = offsetof(struct pt_regs, regs.gp[HOST_##r]) }
+#define REG_OFFSET_END { .name = NULL, .offset = 0 }
+
+static const struct pt_regs_offset regoffset_table[] = {
+#ifdef CONFIG_X86_64
+	REG_OFFSET_NAME("r15", R15),
+	REG_OFFSET_NAME("r14", R14),
+	REG_OFFSET_NAME("r13", R13),
+	REG_OFFSET_NAME("r12", R12),
+	REG_OFFSET_NAME("r11", R11),
+	REG_OFFSET_NAME("r10", R10),
+	REG_OFFSET_NAME("r9", R9),
+	REG_OFFSET_NAME("r8", R8),
+#endif
+	REG_OFFSET_NAME("bx", BX),
+	REG_OFFSET_NAME("cx", CX),
+	REG_OFFSET_NAME("dx", DX),
+	REG_OFFSET_NAME("si", SI),
+	REG_OFFSET_NAME("di", DI),
+	REG_OFFSET_NAME("bp", BP),
+	REG_OFFSET_NAME("ax", AX),
+	REG_OFFSET_NAME("ip", IP),
+	REG_OFFSET_NAME("cs", CS),
+	REG_OFFSET_NAME("flags", EFLAGS),
+	REG_OFFSET_NAME("sp", SP),
+	REG_OFFSET_NAME("ss", SS),
+	REG_OFFSET_END,
+};
+
+/**
+ * regs_query_register_offset() - query register offset from its name
+ * @name:	the name of a register
+ *
+ * regs_query_register_offset() returns the offset of a register in struct
+ * pt_regs from its name. If the name is invalid, this returns -EINVAL;
+ */
+int regs_query_register_offset(const char *name)
+{
+	const struct pt_regs_offset *roff;
+	for (roff = regoffset_table; roff->name != NULL; roff++)
+		if (!strcmp(roff->name, name))
+			return roff->offset;
+	return -EINVAL;
+}
