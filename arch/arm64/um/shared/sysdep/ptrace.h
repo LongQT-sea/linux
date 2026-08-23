@@ -73,4 +73,9 @@ struct uml_pt_regs {
 
 extern int arch_init_registers(int pid);
 
+/* Initial stack pointer for a new thread: arm64 hardware faults on
+ * SP-relative access with SP not 16-byte aligned (SIGBUS). */
+#define UM_THREAD_START_SP(stack) \
+	(((unsigned long)(stack) + UM_THREAD_SIZE - sizeof(void *)) & ~15UL)
+
 #endif /* __SYSDEP_ARM64_PTRACE_H */
