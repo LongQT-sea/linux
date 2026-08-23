@@ -86,7 +86,17 @@ typedef struct user_fpsimd_struct elf_fpregset_t;
 
 struct task_struct;
 
-#define ELF_EXEC_PAGESIZE 4096
+/*
+ * AT_PAGESZ must tell the truth: userspace (ld.so's map-hole and
+ * relro mprotects) sizes its memory syscalls from ELF_EXEC_PAGESIZE,
+ * and the guest mm rejects alignments below PAGE_SIZE.  The x86 UM
+ * template's hardcoded 4096 is correct there (UML-x86 is always 4K);
+ * with configurable arm64 guest pages it must follow PAGE_SIZE, as
+ * native arm64 does.  A 4096 lie on a 16K guest kills every dynamic
+ * binary at ld.so map time, and any static whose startup runs a
+ * relro mprotect.
+ */
+#define ELF_EXEC_PAGESIZE PAGE_SIZE
 
 #define ELF_ET_DYN_BASE (TASK_SIZE / 3 * 2)
 
