@@ -15,7 +15,12 @@
 
 /* This is set once at boot time and not changed thereafter */
 
-unsigned long exec_regs[MAX_REG_NR];
+/*
+ * The full gp frame of the selected backend: the ABI registers plus
+ * any UML-internal slots (UM_GP_SLOTS in sysdep/ptrace.h).
+ * ptrace_getregs() fills the whole array.
+ */
+unsigned long exec_regs[UM_GP_SLOTS];
 unsigned long *exec_fp_regs;
 
 int init_pid_registers(int pid)
@@ -37,7 +42,7 @@ int init_pid_registers(int pid)
 
 void get_safe_registers(unsigned long *regs, unsigned long *fp_regs)
 {
-	memcpy(regs, exec_regs, sizeof(exec_regs));
+	memcpy(regs, exec_regs, UM_GP_SLOTS * sizeof(unsigned long));
 
 	if (fp_regs)
 		memcpy(fp_regs, exec_fp_regs, host_fp_size);
