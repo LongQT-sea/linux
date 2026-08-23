@@ -26,7 +26,7 @@ static noinline void __attribute__((used)) real_init(void)
 		unsigned long long sa_mask;
 	} sa = {
 		/* Need to set SA_RESTORER (but the handler never returns) */
-		.sa_flags = SA_ONSTACK | SA_NODEFER | SA_SIGINFO | 0x04000000,
+		.sa_flags = SA_ONSTACK | SA_NODEFER | SA_SIGINFO | UM_SA_RESTORER,
 	};
 
 	/* set a nice name */
