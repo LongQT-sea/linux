@@ -6,9 +6,12 @@
 # regsets, stub page, signal frame, vdso) and each becomes an object
 # here as it is written.
 
-obj-y = delay.o os-Linux/ sys_call_table.o
+obj-y = delay.o os-Linux/ sys_call_table.o ptrace.o signal.o
 
 USER_OBJS := ptrace_user.o
+
+# Native arm64 checksum objects (csum_ipv6_magic, do_csum).
+subarch-y = ../lib/csum.o
 
 $(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS)
 targets += user-offsets.s
