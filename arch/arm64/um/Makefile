@@ -6,7 +6,7 @@
 # regsets, stub page, signal frame, vdso) and each becomes an object
 # here as it is written.
 
-obj-y = delay.o os-Linux/ sys_call_table.o ptrace.o signal.o
+obj-y = delay.o os-Linux/ sys_call_table.o ptrace.o signal.o syscalls.o bugs.o fault.o sysrq.o tls.o
 
 USER_OBJS := ptrace_user.o
 

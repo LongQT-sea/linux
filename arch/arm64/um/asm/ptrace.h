@@ -44,6 +44,8 @@ struct user_fpsimd_struct {
 /* frame pointer is x29 on arm64 */
 #define PT_REGS_BP(r) ((r)->regs.gp[HOST_X29])
 
+#define PT_REGS_PSTATE(r) UPT_PSTATE(&(r)->regs)
+
 #define PT_FIX_EXEC_STACK(sp) do ; while (0)
 
 #define profile_pc(regs) PT_REGS_IP(regs)
