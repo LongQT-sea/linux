@@ -264,14 +264,8 @@ archheaders:
 # <asm/cpufeaturemasks.h> header generation
 
 cpufeaturemasks.hdr := arch/x86/include/generated/asm/cpufeaturemasks.h
-cpufeaturemasks.awk := $(srctree)/arch/x86/tools/cpufeaturemasks.awk
-cpufeatures_hdr := $(srctree)/arch/x86/include/asm/cpufeatures.h
-targets += $(cpufeaturemasks.hdr)
-      filechk_gen_featuremasks = $(AWK) -f $(cpufeaturemasks.awk) $(cpufeatures_hdr) $(KCONFIG_CONFIG)
+include $(srctree)/arch/x86/Makefile.cpufeaturemasks
 
-$(cpufeaturemasks.hdr): $(cpufeaturemasks.awk) $(cpufeatures_hdr) $(KCONFIG_CONFIG) FORCE
-	$(shell mkdir -p $(dir $@))
-	$(call filechk,gen_featuremasks)
 archprepare: $(cpufeaturemasks.hdr)
 
 ###
