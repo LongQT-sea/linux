@@ -6,6 +6,7 @@ endmenu
 config UML_ARM64
 	def_bool y
 	select CLONE_BACKWARDS
+	select UML_SUBARCH_MEMCPY
 
 config GENERIC_HWEIGHT
 	def_bool y
