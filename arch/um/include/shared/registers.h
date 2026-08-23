@@ -8,6 +8,9 @@
 
 #include <sysdep/ptrace.h>
 
+extern unsigned long exec_regs[MAX_REG_NR];
+extern unsigned long *exec_fp_regs;
+
 extern int init_pid_registers(int pid);
 extern void get_safe_registers(unsigned long *regs, unsigned long *fp_regs);
 extern int get_fp_registers(int pid, unsigned long *regs);
