@@ -232,10 +232,6 @@ static void __init check_ptrace(void)
 	check_sysemu();
 }
 
-extern unsigned long host_fp_size;
-extern unsigned long exec_regs[MAX_REG_NR];
-extern unsigned long *exec_fp_regs;
-
 __initdata static struct stub_data *seccomp_test_stub_data;
 
 static void __init sigsys_handler(int sig, siginfo_t *info, void *p)
