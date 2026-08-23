@@ -14,4 +14,10 @@ extern void arch_examine_signal(int sig, struct uml_pt_regs *regs);
 
 void mc_set_rip(void *_mc, void *target);
 
+struct seq_file;
+
+/* Host CPU feature discovery + /proc/cpuinfo display (backend) */
+void arch_parse_cpu_flags(char *line);
+void arch_cpuinfo_show_extra(struct seq_file *m);
+
 #endif
