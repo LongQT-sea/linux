@@ -32,6 +32,6 @@ EXPORT_SYMBOL(memset);
 #endif
 
 #ifdef _FORTIFY_SOURCE
-extern int __sprintf_chk(char *str, int flag, size_t len, const char *format);
+extern int __sprintf_chk(char *str, int flag, size_t len, const char *format, ...);
 EXPORT_SYMBOL(__sprintf_chk);
 #endif
