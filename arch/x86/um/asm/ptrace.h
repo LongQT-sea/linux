@@ -165,6 +165,39 @@ static inline unsigned long regs_get_register(struct pt_regs *regs,
 
 extern int regs_query_register_offset(const char *name);
 
+#ifdef CONFIG_X86_64
+/**
+ * regs_get_kernel_argument() - get Nth function argument in kernel
+ * @regs:	pt_regs of that context
+ * @n:		function argument number (start from 0)
+ *
+ * regs_get_kernel_argument() returns @n th argument of the function call.
+ * Note that this chooses the most likely register mapping. The um kernel
+ * is a normal SysV AMD64 binary, so the argument registers and the
+ * stack layout past them are the native x86-64 kernel's (the return
+ * address occupies stack slot 0).
+ */
+static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
+						     unsigned int n)
+{
+	static const unsigned int argument_offs[] = {
+		offsetof(struct pt_regs, regs.gp[HOST_DI]),
+		offsetof(struct pt_regs, regs.gp[HOST_SI]),
+		offsetof(struct pt_regs, regs.gp[HOST_DX]),
+		offsetof(struct pt_regs, regs.gp[HOST_CX]),
+		offsetof(struct pt_regs, regs.gp[HOST_R8]),
+		offsetof(struct pt_regs, regs.gp[HOST_R9]),
+	};
+#define NR_REG_ARGUMENTS 6
+
+	if (n >= NR_REG_ARGUMENTS) {
+		n -= NR_REG_ARGUMENTS - 1;
+		return regs_get_kernel_stack_nth(regs, n);
+	} else
+		return regs_get_register(regs, argument_offs[n]);
+}
+#endif
+
 extern void arch_switch_to(struct task_struct *to);
 
 #endif /* __UM_X86_PTRACE_H */

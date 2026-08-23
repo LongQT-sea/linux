@@ -335,6 +335,8 @@ extern int get_pty(void);
 long syscall(long number, ...);
 
 /* irqflags tracing */
+unsigned long mc_mask_async_signals(void *mc);
+void mc_unmask_async_signals(void *mc, unsigned long mask);
 extern void block_signals_trace(void);
 extern void unblock_signals_trace(void);
 extern void um_trace_signals_on(void);

@@ -11,6 +11,15 @@
 
 struct siginfo;
 
+/*
+ * The host-signal delivery chain must not be probed by kprobes: a probe
+ * inside it would re-enter the chain on its own SIGTRAP and recurse until
+ * the stack overflows. Host-side (USER_OBJS) code cannot use
+ * NOKPROBE_SYMBOL(); this attribute places such functions in
+ * .kprobes.text, which the kprobe core refuses to probe.
+ */
+#define __uml_nokprobe __attribute__((__section__(".kprobes.text")))
+
 extern int uml_exitcode;
 
 extern int kmalloc_ok;

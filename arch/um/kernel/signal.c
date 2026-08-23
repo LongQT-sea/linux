@@ -7,6 +7,7 @@
 #include <linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/ftrace.h>
+#include <linux/kprobes.h>
 #include <asm/siginfo.h>
 #include <asm/signal.h>
 #include <asm/unistd.h>
@@ -23,6 +24,7 @@ void block_signals_trace(void)
 	if (current_thread_info())
 		trace_hardirqs_off();
 }
+NOKPROBE_SYMBOL(block_signals_trace);
 
 void unblock_signals_trace(void)
 {
@@ -30,6 +32,7 @@ void unblock_signals_trace(void)
 		trace_hardirqs_on();
 	unblock_signals();
 }
+NOKPROBE_SYMBOL(unblock_signals_trace);
 
 void um_trace_signals_on(void)
 {

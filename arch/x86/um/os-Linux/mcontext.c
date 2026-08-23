@@ -14,8 +14,9 @@
 #include <sysdep/ptrace.h>
 #include <sysdep/mcontext.h>
 #include <arch.h>
+#include <kern_util.h>
 
-void get_regs_from_mc(struct uml_pt_regs *regs, mcontext_t *mc)
+void __uml_nokprobe get_regs_from_mc(struct uml_pt_regs *regs, mcontext_t *mc)
 {
 #ifdef __i386__
 #define COPY2(X,Y) regs->gp[X] = mc->gregs[REG_##Y]
@@ -47,7 +48,7 @@ void get_regs_from_mc(struct uml_pt_regs *regs, mcontext_t *mc)
 #endif
 }
 
-void mc_set_rip(void *_mc, void *target)
+void __uml_nokprobe mc_set_rip(void *_mc, void *target)
 {
 	mcontext_t *mc = _mc;
 
@@ -59,7 +60,8 @@ void mc_set_rip(void *_mc, void *target)
 }
 
 /* Same thing, but the copy macros are turned around. */
-void get_mc_from_regs(struct uml_pt_regs *regs, mcontext_t *mc, int single_stepping)
+void __uml_nokprobe get_mc_from_regs(struct uml_pt_regs *regs, mcontext_t *mc,
+				     int single_stepping)
 {
 #ifdef __i386__
 #define COPY2(X,Y) mc->gregs[REG_##Y] = regs->gp[X]
@@ -88,6 +90,21 @@ void get_mc_from_regs(struct uml_pt_regs *regs, mcontext_t *mc, int single_stepp
 		mc->gregs[REG_EFL] |= X86_EFLAGS_TF;
 	else
 		mc->gregs[REG_EFL] &= ~X86_EFLAGS_TF;
+}
+
+/*
+ * void *-typed wrappers for kernel-side callers (mcontext_t is a host
+ * libc type, invisible to kernel-side objects).
+ */
+void __uml_nokprobe mc_get_regs(struct uml_pt_regs *regs, void *mc)
+{
+	get_regs_from_mc(regs, mc);
+}
+
+void __uml_nokprobe mc_set_regs(struct uml_pt_regs *regs, void *mc,
+				int single_stepping)
+{
+	get_mc_from_regs(regs, mc, single_stepping);
 }
 
 #ifdef CONFIG_X86_32

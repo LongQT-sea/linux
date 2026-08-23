@@ -24,6 +24,14 @@ config UML_X86
 	# (no HAVE_DYNAMIC_FTRACE*), so attach uses bpf_arch_text_poke.
 	select HAVE_FUNCTION_TRACER if 64BIT
 	select HAVE_FENTRY if 64BIT
+	# Kprobes reuse the x86 kprobes core via subarch-y: the arm path
+	# is int3 plus an out-of-line single-step, relayed from the host
+	# SIGTRAP handler. Not HAVE_KPROBES_ON_FTRACE: that wants
+	# DYNAMIC_FTRACE_WITH_REGS, and um has no dynamic-ftrace backend
+	# (see above).
+	select HAVE_KPROBES if 64BIT
+	select HAVE_REGS_AND_STACK_ACCESS_API if 64BIT
+	select HAVE_FUNCTION_ARG_ACCESS_API if 64BIT
 
 # UML/x86 reuses arch/x86/kernel/uprobes.c via subarch-y; the guest-user
 # int3/single-step relay arrives as SIGTRAP through the skas trap path.

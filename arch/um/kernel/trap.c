@@ -10,6 +10,7 @@
 #include <linux/uaccess.h>
 #include <linux/sched/debug.h>
 #include <linux/uprobes.h>
+#include <linux/kprobes.h>
 #include <asm/current.h>
 #include <asm/tlbflush.h>
 #include <arch.h>
@@ -57,6 +58,37 @@ void fatal_sigsegv(void)
 	os_dump_core();
 }
 
+#ifdef CONFIG_KPROBES
+/* async signals masked in the signal frame for a pending single-step */
+static unsigned long kprobe_ss_masked;
+
+/*
+ * On native x86, setup_singlestep() clears EFLAGS.IF in the saved regs,
+ * so no interrupt can arrive while a kprobe's displaced instruction runs
+ * from its out-of-line slot. Under UML, interrupts are host signals and
+ * the saved EFLAGS have no effect on their delivery; an interrupt
+ * handler running inside the single-step window could hit another kprobe
+ * and corrupt the per-cpu kprobe state (a class of reentry the native
+ * IF-clear rules out). Mask the interrupt signals in the signal frame
+ * while a step is pending, and unmask them once no step is pending
+ * anymore (the completing int3, or the fault path in segv()).
+ */
+static void kprobe_update_ss_mask(void *mc)
+{
+	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+
+	if (kprobe_running() &&
+	    (kcb->kprobe_status == KPROBE_HIT_SS ||
+	     kcb->kprobe_status == KPROBE_REENTER)) {
+		kprobe_ss_masked |= mc_mask_async_signals(mc);
+	} else if (kprobe_ss_masked) {
+		mc_unmask_async_signals(mc, kprobe_ss_masked);
+		kprobe_ss_masked = 0;
+	}
+}
+NOKPROBE_SYMBOL(kprobe_update_ss_mask);
+#endif
+
 /**
  * segv_handler() - the SIGSEGV handler
  * @sig:	the signal number
@@ -80,6 +112,7 @@ void segv_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs,
 	}
 	segv(*fi, UPT_IP(regs), UPT_IS_USER(regs), regs, mc);
 }
+NOKPROBE_SYMBOL(segv_handler);
 
 /*
  * We give a *copy* of the faultinfo in the regs to segv.
@@ -97,6 +130,34 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 
 	if (!is_user && regs)
 		current->thread.segv_regs = container_of(regs, struct pt_regs, regs);
+
+#ifdef CONFIG_KPROBES
+	/*
+	 * Mirror the kprobe_page_fault() hook at the top of the native x86
+	 * page-fault handler: on a fault while a kprobe's displaced
+	 * instruction runs from its out-of-line slot,
+	 * kprobe_fault_handler() rewinds the saved ip to the probed
+	 * address and unwinds the kprobe state, and normal fault handling
+	 * continues from there. The host restores register state from the
+	 * mcontext on sigreturn, so a rewound ip must be written back, and
+	 * interrupt signals masked for the single-step window must be
+	 * unmasked again (see relay_signal()). The trap number argument is
+	 * only inspected by arch fault handlers that care; um's does not.
+	 */
+	if (!is_user && regs && mc) {
+		struct pt_regs *pregs = container_of(regs, struct pt_regs,
+						     regs);
+		unsigned long saved_ip = UPT_IP(regs);
+		bool handled = kprobe_page_fault(pregs, 0);
+
+		if (handled || UPT_IP(regs) != saved_ip) {
+			kprobe_update_ss_mask(mc);
+			mc_set_regs(regs, mc, 0);
+		}
+		if (handled)
+			goto out;
+	}
+#endif
 
 	if (!is_user && address >= start_vm && address < end_vm) {
 		/*
@@ -178,12 +239,37 @@ out:
 
 	return 0;
 }
+NOKPROBE_SYMBOL(segv);
 
 void relay_signal(int sig, struct siginfo *si, struct uml_pt_regs *regs,
 		  void *mc)
 {
 	int code, err;
 	if (!UPT_IS_USER(regs)) {
+#ifdef CONFIG_KPROBES
+		/*
+		 * A kernel-mode int3 (kprobe hit, or completion of a
+		 * displaced-instruction step from an out-of-line slot)
+		 * arrives here as a host SIGTRAP. UML raises no die chain,
+		 * so join the kprobe core directly (the arm64/riscv
+		 * pattern, same as the user-mode uprobe relay below).
+		 * sig_handler_common() only fills the regs shell from the
+		 * mcontext for SIGSEGV, so do it here; on a consumed trap,
+		 * write the (possibly redirected) state back, since the
+		 * mcontext is what the host restores on sigreturn.
+		 */
+		if (sig == SIGTRAP && mc) {
+			struct pt_regs *pregs =
+				container_of(regs, struct pt_regs, regs);
+
+			mc_get_regs(regs, mc);
+			if (kprobe_int3_handler(pregs)) {
+				kprobe_update_ss_mask(mc);
+				mc_set_regs(regs, mc, 0);
+				return;
+			}
+		}
+#endif
 		if (sig == SIGBUS)
 			printk(KERN_ERR "Bus error - the host /dev/shm or /tmp "
 			       "mount likely just ran out of space\n");
@@ -230,6 +316,7 @@ void relay_signal(int sig, struct siginfo *si, struct uml_pt_regs *regs,
 		force_sig(sig);
 	}
 }
+NOKPROBE_SYMBOL(relay_signal);
 
 void winch(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs,
 	   void *mc)

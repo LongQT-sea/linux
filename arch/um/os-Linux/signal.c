@@ -6,6 +6,7 @@
  * Copyright (C) 2004 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  */
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -34,7 +35,8 @@ void (*sig_info[NSIG])(int, struct siginfo *, struct uml_pt_regs *, void *mc) = 
 	[SIGCHLD]	= sigchld_handler,
 };
 
-static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
+static void __uml_nokprobe sig_handler_common(int sig, struct siginfo *si,
+					      mcontext_t *mc)
 {
 	struct uml_pt_regs r;
 
@@ -45,8 +47,15 @@ static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
 		GET_FAULTINFO_FROM_MC(r.faultinfo, mc);
 	}
 
-	/* enable signals if sig isn't IRQ signal */
-	if ((sig != SIGIO) && (sig != SIGWINCH) && (sig != SIGCHLD))
+	/*
+	 * Enable signals unless this is an IRQ signal or a kernel-mode
+	 * breakpoint trap: kprobe int3 handling must run, like the native
+	 * int3 handler, without interrupts (relay_signal() feeds
+	 * kernel-mode SIGTRAP to the kprobe core; anything else panics
+	 * there regardless of the signal state).
+	 */
+	if ((sig != SIGIO) && (sig != SIGWINCH) && (sig != SIGCHLD) &&
+	    (sig != SIGTRAP))
 		unblock_signals_trace();
 
 	(*sig_info[sig])(sig, si, &r, mc);
@@ -74,7 +83,8 @@ static int signals_blocked, signals_blocked_pending;
 static __thread unsigned int signals_pending;
 static __thread unsigned int signals_active;
 
-static void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
+static void __uml_nokprobe sig_handler(int sig, struct siginfo *si,
+				       mcontext_t *mc)
 {
 	int enabled = signals_enabled;
 
@@ -201,7 +211,7 @@ static void (*handlers[_NSIG])(int sig, struct siginfo *si, mcontext_t *mc) = {
 	[SIGUSR1] = sigusr1_handler,
 };
 
-static void hard_handler(int sig, siginfo_t *si, void *p)
+static void __uml_nokprobe hard_handler(int sig, siginfo_t *si, void *p)
 {
 	ucontext_t *uc = p;
 	mcontext_t *mc = &uc->uc_mcontext;
@@ -228,7 +238,17 @@ void set_handler(int sig)
 	if (using_seccomp)
 		sigaddset(&action.sa_mask, SIGCHLD);
 
-	if (sig == SIGSEGV)
+	/*
+	 * SIGSEGV must nest: kernel-mode faults (uaccess, kprobe
+	 * single-step faults) arrive while a handler runs. SIGTRAP must
+	 * nest for the same reason int3 is a nestable exception on native
+	 * x86: a kprobe pre/post handler can run into another probed
+	 * function (the reentrant hit the core counts in nmissed), and its
+	 * int3 must be deliverable while the outer SIGTRAP handler runs;
+	 * with SIGTRAP deferred, the host would force-kill the process on
+	 * that int3 instead.
+	 */
+	if (sig == SIGSEGV || sig == SIGTRAP)
 		flags |= SA_NODEFER;
 
 	if (sigismember(&action.sa_mask, sig))
@@ -282,7 +302,7 @@ static inline void __unblock_signals(void)
 	os_local_ipi_enable();
 }
 
-void block_signals(void)
+void __uml_nokprobe block_signals(void)
 {
 	__block_signals();
 	/*
@@ -294,7 +314,7 @@ void block_signals(void)
 	barrier();
 }
 
-void unblock_signals(void)
+void __uml_nokprobe unblock_signals(void)
 {
 	int save_pending;
 
@@ -377,7 +397,7 @@ int um_get_signals(void)
 	return signals_enabled;
 }
 
-int um_set_signals(int enable)
+int __uml_nokprobe um_set_signals(int enable)
 {
 	int ret;
 	if (signals_enabled == enable)
@@ -391,7 +411,7 @@ int um_set_signals(int enable)
 	return ret;
 }
 
-int um_set_signals_trace(int enable)
+int __uml_nokprobe um_set_signals_trace(int enable)
 {
 	int ret;
 	if (signals_enabled == enable)
@@ -504,3 +524,51 @@ void unblock_signals_hard(void)
 	unblocking = false;
 }
 #endif
+
+/*
+ * Mask/unmask the asynchronous (guest IRQ) signals in a signal frame's
+ * saved sigmask; the change takes effect when the host sigreturns from
+ * that frame. Used to keep interrupt signals from being delivered while
+ * a kprobe's displaced instruction runs from its out-of-line slot (see
+ * relay_signal()). The mask helper returns the set of signals it newly
+ * masked, as a bitmap over mc_async_signals[], so that the unmask
+ * helper clears exactly those and signals blocked by the interrupted
+ * context stay blocked.
+ */
+static const int mc_async_signals[] = { SIGIO, SIGALRM, SIGWINCH, SIGCHLD };
+#define MC_NUM_ASYNC ARRAY_SIZE(mc_async_signals)
+
+static __uml_nokprobe sigset_t *mc_sigmask(void *mc)
+{
+	ucontext_t *uc;
+
+	/* the mcontext handed to a signal handler is embedded in its ucontext */
+	uc = (ucontext_t *)((char *)mc - offsetof(ucontext_t, uc_mcontext));
+	return &uc->uc_sigmask;
+}
+
+unsigned long __uml_nokprobe mc_mask_async_signals(void *mc)
+{
+	sigset_t *set = mc_sigmask(mc);
+	unsigned long added = 0;
+	unsigned int i;
+
+	for (i = 0; i < MC_NUM_ASYNC; i++) {
+		if (!sigismember(set, mc_async_signals[i])) {
+			sigaddset(set, mc_async_signals[i]);
+			added |= 1UL << i;
+		}
+	}
+
+	return added;
+}
+
+void __uml_nokprobe mc_unmask_async_signals(void *mc, unsigned long mask)
+{
+	unsigned int i;
+
+	for (i = 0; i < MC_NUM_ASYNC; i++) {
+		if (mask & (1UL << i))
+			sigdelset(mc_sigmask(mc), mc_async_signals[i]);
+	}
+}
