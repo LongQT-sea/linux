@@ -142,6 +142,7 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 {
 	struct stub_data *data = (void *)mm_idp->stack;
 	unsigned int futex_val;
+	unsigned long budget;
 	int ret;
 
 	do {
@@ -191,12 +192,25 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 		}
 
 		/*
+		 * A stub that answers within the budget is observed by the
+		 * spin without ever entering FUTEX_WAIT. A dead child cannot
+		 * flip the word, so the spin can only cost its bounded budget
+		 * before the PID checks below run as they always did.
+		 */
+		budget = stub_futex_spin_budget(&data->kern_spin,
+						data->spin_ticks);
+		futex_val = stub_futex_spin(&data->futex, FUTEX_IN_CHILD,
+					    budget);
+		if (budget)
+			stub_futex_spin_result(&data->kern_spin,
+					       STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_KERN);
+
+		/*
 		 * Going to sleep: advertise it via the waiter bit so the
 		 * stub's handoff knows to send a wake. The fetch_or returns
-		 * the old value, so a flip that already happened is seen here
-		 * and skips the wait entirely.
+		 * the old value, so a flip that happened since the spin gave
+		 * up is seen here and skips the wait entirely.
 		 */
-		futex_val = stub_futex_load_acquire(&data->futex);
 		if (STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_CHILD)
 			futex_val = stub_futex_fetch_or(&data->futex,
 							STUB_FUTEX_WAITER) |
@@ -487,6 +501,52 @@ unsigned long stub_arch_init_flags;
 int have_ptrace_sysemu = 1;
 int syscall_cancel_nr = -1;
 
+/*
+ * Ticks of the backend's stub_cycles() timebase per microsecond, probed and
+ * cached once at boot by check_stub_cycles(); 0 means no usable constant-rate
+ * counter, which keeps every spin budget at zero (park immediately).
+ */
+unsigned long stub_cycles_rate;
+
+/*
+ * How long each side may busy-poll the handoff word before parking, in
+ * microseconds. The handoff cost is dominated by the parked peer's wakeup
+ * (futex syscall plus a voluntary context switch) around a few microseconds
+ * of actual work, so 10us covers the reply for the syscalls that matter
+ * while capping what a miss can burn at roughly the cost of the futex sleep
+ * it tried to avoid. The hit-streak accounting (see stub-futex.h) keeps an
+ * idle or compute-bound guest from paying even that on every wait.
+ */
+#define SECCOMP_SPIN_DEFAULT_US 10
+
+static unsigned long seccomp_spin_us = SECCOMP_SPIN_DEFAULT_US;
+
+static int __init uml_seccomp_spin_setup(char *line, int *add)
+{
+	*add = 0;
+	seccomp_spin_us = strtoul(line, NULL, 0);
+
+	/*
+	 * Anything beyond a scheduling quantum defeats the purpose and risks
+	 * the budget arithmetic overflowing spin_ticks; clamp, don't reject.
+	 */
+	if (seccomp_spin_us > 100000)
+		seccomp_spin_us = 100000;
+
+	return 0;
+}
+
+__uml_setup("seccomp_spin=", uml_seccomp_spin_setup,
+"seccomp_spin=<microseconds>\n"
+"    In SECCOMP mode, busy-poll the stub<->kernel handoff word this long\n"
+"    before sleeping in FUTEX_WAIT, so a fast peer is observed without the\n"
+"    futex syscalls and the context switch they cost. Bounded by wall time\n"
+"    (a constant-rate counter), not iterations, so it means the same thing\n"
+"    at every CPU frequency. An adaptive hit-streak stops the polling when\n"
+"    the peer keeps being slow. 0 disables polling; backends without a\n"
+"    usable counter never poll regardless.\n"
+"    Default: 10 (SECCOMP_SPIN_DEFAULT_US).\n\n");
+
 /**
  * start_userspace() - prepare a new userspace process
  * @mm_id: The corresponding struct mm_id
@@ -530,8 +590,18 @@ int start_userspace(struct mm_id *mm_id)
 		return err;
 	}
 
-	if (using_seccomp)
+	if (using_seccomp) {
 		proc_data->futex = FUTEX_IN_CHILD;
+		/*
+		 * Convert the microsecond budget into counter ticks once per
+		 * stub, before it first runs; the stub cannot compute this
+		 * itself without re-reading the counter rate on every trap.
+		 * stub_cycles_rate is 0 where no constant-rate counter is
+		 * usable, which disables the spin but keeps the waiter-bit
+		 * protocol.
+		 */
+		proc_data->spin_ticks = seccomp_spin_us * stub_cycles_rate;
+	}
 
 	mm_id->pid = clone(userspace_tramp, (void *) sp,
 		    CLONE_VFORK | CLONE_VM | SIGCHLD,

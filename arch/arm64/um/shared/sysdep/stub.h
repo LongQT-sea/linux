@@ -213,6 +213,47 @@ stub_futex_fetch_or(volatile unsigned int *addr, unsigned int bits)
 	return old;
 }
 
+/* Be polite to an SMT or virtualized host; on bare cores it is a cheap nop. */
+static __always_inline void stub_relax(void)
+{
+	__asm__ volatile("yield");
+}
+#define stub_relax stub_relax
+
+/*
+ * The generic timer's virtual counter: constant-rate, synchronized across
+ * cores, and readable at EL0 on any Linux host because the vDSO clock needs
+ * it too (CNTKCTL_EL1.EL0VCTEN). The CPU clock is none of those things -- it
+ * scales by an order of magnitude under the governor on phone-class SoCs,
+ * which is exactly why the spin bound is expressed in these ticks.
+ *
+ * No ISB before the read: the barrier would cost more than the few cycles of
+ * speculation slack it removes, and a microsecond-scale budget does not care.
+ */
+static __always_inline unsigned long stub_cycles(void)
+{
+	unsigned long val;
+
+	__asm__ volatile("mrs	%0, cntvct_el0" : "=r" (val));
+
+	return val;
+}
+#define stub_cycles stub_cycles
+
+/*
+ * CNTFRQ_EL0 is readable wherever CNTVCT_EL0 is. Firmware that leaves it
+ * unprogrammed reads as 0, which flows through the budget arithmetic as
+ * "never spin" -- a safe degradation, not a crash.
+ */
+static __always_inline unsigned long stub_cycles_per_us(void)
+{
+	unsigned long freq;
+
+	__asm__ volatile("mrs	%0, cntfrq_el0" : "=r" (freq));
+
+	return freq / 1000000;
+}
+
 /*
  * The stub data page sits directly above the stub code page; adrp
  * yields the current page, add one page size.

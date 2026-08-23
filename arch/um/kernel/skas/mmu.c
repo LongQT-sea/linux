@@ -130,10 +130,22 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				printk("Unexpectedly lost MM child! Affected tasks will segfault.");
 
 				/* Marks the MM as dead */
-				mm_context->id.pid = -1;
+				WRITE_ONCE(mm_context->id.pid, -1);
 
 				stub_data = (void *)mm_context->id.stack;
-				stub_data->futex = FUTEX_IN_KERN;
+				/*
+				 * The release orders the pid store above
+				 * before the handoff-word flip: it pairs with
+				 * the acquire load in the spinning reader in
+				 * wait_stub_done_seccomp(), which never enters
+				 * FUTEX_WAIT and so never sees the futex
+				 * syscall's ordering that a parked waiter
+				 * gets. A reader that observes FUTEX_IN_KERN
+				 * must also observe pid == -1, or it would
+				 * treat a dead stub as a live handoff.
+				 */
+				smp_store_release(&stub_data->futex,
+						  FUTEX_IN_KERN);
 				/*
 				 * Unconditional on purpose -- the waiter-bit
 				 * wake elision must never be used on this
@@ -145,15 +157,13 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				 * leaves only the bounded-wait probe in
 				 * wait_stub_done_seccomp() (pidfd poll on
 				 * timeout) to catch the death, seconds
-				 * later. The plain store can race with the
-				 * waiter's fetch_or of its waiter bit; that
-				 * is fine, because FUTEX_WAIT revalidates
-				 * the value it was passed and this wake
-				 * always fires. The syscall also carries the
-				 * barrier the plain store lacks. (This was
-				 * SMP-only before the waiter bit existed;
-				 * now the wake is the one kick that works no
-				 * matter where the waiter is.)
+				 * later. The store can race with the waiter's
+				 * fetch_or of its waiter bit; that is fine,
+				 * because FUTEX_WAIT revalidates the value it
+				 * was passed and this wake always fires.
+				 * (This was SMP-only before the waiter bit
+				 * existed; now the wake is the one kick that
+				 * works no matter where the waiter is.)
 				 */
 				os_futex_wake(&stub_data->futex);
 
@@ -172,6 +182,20 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 static int __init init_child_tracking(void)
 {
 	int err;
+
+	/*
+	 * The handoff word must own its cacheline outright: both sides may
+	 * poll it, and a field the peer writes sharing the line would turn
+	 * the spin in stub-futex.h into a stream of coherence misses. Assert
+	 * the layout so a reorder of struct stub_data cannot quietly regress
+	 * this -- it would still be correct, just slow in a way nothing
+	 * functional would ever catch.
+	 */
+	BUILD_BUG_ON(offsetof(struct stub_data, futex) % STUB_FUTEX_ALIGN != 0);
+	BUILD_BUG_ON(offsetofend(struct stub_data, syscall_data_len) >
+		     offsetof(struct stub_data, futex));
+	BUILD_BUG_ON(offsetof(struct stub_data, syscall_data) <
+		     offsetof(struct stub_data, futex) + STUB_FUTEX_ALIGN);
 
 	spin_lock_init(&mm_list_lock);
 	INIT_LIST_HEAD(&mm_list);
