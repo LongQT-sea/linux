@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# arm64 backend build glue for UML (ARCH=um, SUBARCH=arm64).
+# Mirrors arch/x86/Makefile.um's role: image layout, linker emulation,
+# backend cflags.
+
+START := 0x60000000
+
+# Like the native arm64 kernel (and like x86 UML's -mno-sse family):
+# no FP/SIMD registers in kernel or host-side code. UML's context
+# switch goes through kernel_setjmp, whose jmp_buf holds only the
+# callee-saved general registers; compiler-scheduled use of d8-d15
+# would not survive a switch, and the host FP state belongs to the
+# guest anyway.
+KBUILD_CFLAGS	+= -mgeneral-regs-only
+
+KBUILD_LDFLAGS	+= -EL $(call ld-option, -maarch64elf, -maarch64linux -z norelro)
+
+ELF_ARCH	:= aarch64
+ELF_FORMAT	:= elf64-littleaarch64
+CHECKFLAGS	+= -D__aarch64__
+
+# arm64's native headers have generated companions (cpucap-defs.h,
+# kernel-hwcap.h, sysreg-defs.h) produced by arch/arm64/tools kapi;
+# run it during archprepare via the core's backend hook.
+ARCHPREPARE_BACKEND := kapigen
