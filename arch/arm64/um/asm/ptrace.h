@@ -9,6 +9,28 @@ enum {
 };
 
 #include <linux/compiler.h>
+
+/*
+ * The arm64 ptrace ABI register frame, owned by the backend (identical
+ * to uapi/asm/ptrace.h: x0..x30, sp, pc, pstate), defined here rather
+ * than pulled from the native header, which drags in native hwcap.h /
+ * cpufeature.h (the CONFIG_ARM64_* class).
+ */
+struct user_regs_struct {
+	__u64 regs[31];
+	__u64 sp;
+	__u64 pc;
+	__u64 pstate;
+};
+
+/* fpsimd register frame (identical to uapi/asm/ptrace.h) */
+struct user_fpsimd_struct {
+	__uint128_t vregs[32];
+	__u32 fpsr;
+	__u32 fpcr;
+	__u32 __reserved[2];
+};
+
 #include <asm/ptrace-generic.h>
 
 #define user_mode(r) UPT_IS_USER(&(r)->regs)
