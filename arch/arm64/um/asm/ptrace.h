@@ -48,8 +48,16 @@ struct user_fpsimd_struct {
 
 #define profile_pc(regs) PT_REGS_IP(regs)
 
-/* svc is 4 bytes; rewind one instruction to restart a syscall */
-#define UPT_RESTART_SYSCALL(r) (UPT_IP(r) -= 4)
+/*
+ * Restart a syscall: rewind the PC by one instruction (svc is 4
+ * bytes) and restore x0 from the trap-time snapshot (HOST_ARG0), as
+ * native arm64 restores orig_x0. By restart time x0 holds the
+ * -ERESTART* error, not the first argument.
+ */
+#define UPT_RESTART_SYSCALL(r) do {					\
+	(r)->gp[HOST_X0] = (r)->gp[HOST_ARG0];				\
+	UPT_IP(r) -= 4;							\
+} while (0)
 #define PT_REGS_SET_SYSCALL_RETURN(r, res) (PT_REGS_SYSCALL_RET(r) = (res))
 
 static inline long regs_return_value(struct pt_regs *regs)

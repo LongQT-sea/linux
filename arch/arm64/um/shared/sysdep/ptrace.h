@@ -13,6 +13,30 @@
 #define MAX_REG_OFFSET (UM_FRAME_SIZE)
 #define MAX_REG_NR ((MAX_REG_OFFSET) / sizeof(unsigned long))
 
+/*
+ * Full gp-frame size in unsigned longs: the ABI frame plus the
+ * UML-internal slots below (HOST_TLS, HOST_SYSCALLNO, HOST_ARG0).
+ * Shared-core gp[] buffers size off this, never MAX_REG_NR + N.
+ */
+#define UM_GP_SLOTS (MAX_REG_NR + 3)
+
+/* UML-internal slot past the ABI frame (x0..x30, sp, pc, pstate): the
+ * guest's TPIDR_EL0 value. */
+#define HOST_TLS 34
+
+/* Second UML-internal slot: the syscall number, mirrored from x8 by the
+ * regset marshal. PT_SYSCALL_NR must not alias a live GPR: process.c's
+ * -ERESTARTSYS guard writes -1 into it after every relayed signal, and
+ * x8 is a compiler-used register (x86's ORIG_RAX is dead storage). */
+#define HOST_SYSCALLNO 35
+
+/* Third UML-internal slot: the trap-time x0, mirrored by the regset
+ * marshal / get_stub_state. handle_syscall writes the default return
+ * (-ENOSYS) into x0 BEFORE reading args, harmless on x86 (rax is not
+ * an argument register) but on arm64 x0 is both return and arg1, so
+ * UPT_SYSCALL_ARG1 reads this snapshot instead. */
+#define HOST_ARG0 36
+
 #define REGS_Xn(r, n) ((r)[HOST_X0 + (n)])
 #define REGS_PC(r) ((r)[HOST_PC])
 #define REGS_SP(r) ((r)[HOST_SP])
@@ -22,7 +46,7 @@
 #define UPT_SP(r) REGS_SP((r)->gp)
 #define UPT_PSTATE(r) REGS_PSTATE((r)->gp)
 
-#define UPT_SYSCALL_ARG1(r) ((r)->gp[HOST_X0])
+#define UPT_SYSCALL_ARG1(r) ((r)->gp[HOST_ARG0])
 #define UPT_SYSCALL_ARG2(r) ((r)->gp[HOST_X1])
 #define UPT_SYSCALL_ARG3(r) ((r)->gp[HOST_X2])
 #define UPT_SYSCALL_ARG4(r) ((r)->gp[HOST_X3])
@@ -32,7 +56,7 @@
 extern unsigned long host_fp_size;
 
 struct uml_pt_regs {
-	unsigned long gp[MAX_REG_NR];
+	unsigned long gp[UM_GP_SLOTS]; /* ABI frame + HOST_TLS/SYSCALLNO/ARG0 */
 	struct faultinfo faultinfo;
 	long syscall;
 	int is_user;

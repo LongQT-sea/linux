@@ -6,7 +6,9 @@
 # regsets, stub page, signal frame, vdso) and each becomes an object
 # here as it is written.
 
-obj-y =
+obj-y = delay.o os-Linux/ sys_call_table.o
+
+USER_OBJS := ptrace_user.o
 
 $(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS)
 targets += user-offsets.s
