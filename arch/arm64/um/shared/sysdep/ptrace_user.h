@@ -21,6 +21,40 @@
 #define REGS_SP_INDEX HOST_SP
 
 /*
+ * arm64 makes one general-purpose register unusable at a ptrace syscall
+ * stop.
+ *
+ * To tell a tracer whether a stop came from syscall entry or syscall
+ * exit, the arm64 kernel overwrites a register in the tracee with the
+ * direction (x7 for AArch64, r12 for AArch32) and puts the tracee's own
+ * value back when the stop ends. ptrace_save_reg() in
+ * arch/arm64/kernel/ptrace.c spells out the consequences: reads by the
+ * tracer see the direction rather than the register, and writes by the
+ * tracer during the stop are discarded.
+ *
+ * x86 has no equivalent, so nothing in UML expected it, and the result
+ * is guest-visible data corruption rather than a missing feature: UML
+ * reads a thread's registers at the stop, keeps them, and writes them
+ * back later, possibly into a stub process another thread of the same
+ * guest mm ran on last. Both halves break: the read stores the stop
+ * direction (0) into UML's copy of the thread's x7, and the write is
+ * silently dropped, so the stub keeps whichever thread's x7 ran last.
+ * A value a threaded guest holds in x7 across a loop turns into zero
+ * or another thread's value at an arbitrary point.
+ *
+ * The escape: resuming the stop with PTRACE_SINGLESTEP lands on a
+ * pseudo-step SIGTRAP where the register is readable and writable,
+ * without executing a guest instruction. See userspace() in
+ * arch/um/os-Linux/skas/process.c.
+ *
+ * SECCOMP mode is unaffected: its traps are ordinary signals, and the
+ * arm64 comment quoted above notes that seccomp and pseudo-step traps
+ * nobble nothing.
+ */
+#define UM_SYSCALL_STOP_HIDES_REG 1
+#define UM_SYSCALL_STOP_HIDDEN_REG HOST_X7
+
+/*
  * fpsimd state, two layouts.
  *
  * The canonical in-kernel layout of regs->fp is user_fpsimd_state:

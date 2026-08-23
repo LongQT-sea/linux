@@ -724,6 +724,97 @@ void userspace(struct uml_pt_regs *regs)
 				fatal_sigsegv();
 			}
 
+#ifdef UM_SYSCALL_STOP_HIDES_REG
+			/*
+			 * One register is not visible at a syscall stop and
+			 * cannot be written there either; see
+			 * UM_SYSCALL_STOP_HIDES_REG in <sysdep/ptrace_user.h>.
+			 * Everything else has just been read correctly, so step
+			 * off the stop and pick up that one register alone.
+			 *
+			 * The step runs no guest code: the syscall stays
+			 * emulated away and the program counter does not move.
+			 * It is still not a free stop to stand on, because it
+			 * arrives as a forced SIGTRAP, so the host's signal
+			 * path runs and clears the recorded syscall number,
+			 * and would rewind the program counter if the first
+			 * syscall argument happened to look like -ERESTARTSYS.
+			 * Taking only the hidden register from here, and
+			 * everything else from the syscall stop above, is
+			 * immune to both: whatever the host did to the rest is
+			 * overwritten by the register write that resumes this
+			 * task.
+			 *
+			 * The other half of the reason to step is the write:
+			 * the task is left parked on a stop where the full
+			 * register set can be installed, which is what a guest
+			 * thread switch needs and what a syscall stop silently
+			 * refuses.
+			 */
+			if (WIFSTOPPED(status) &&
+			    WSTOPSIG(status) == (SIGTRAP | 0x80)) {
+				unsigned long hidden[UM_GP_SLOTS];
+				int sstatus, tries = 0;
+
+				while (1) {
+					if (ptrace(PTRACE_SINGLESTEP, pid, 0, 0)) {
+						printk(UM_KERN_ERR "%s - failed to step off a syscall stop, errno = %d\n",
+						       __func__, errno);
+						fatal_sigsegv();
+					}
+
+					CATCH_EINTR(err = waitpid(pid, &sstatus,
+								  WUNTRACED | __WALL));
+					if (err < 0) {
+						printk(UM_KERN_ERR "%s - wait after step failed, errno = %d\n",
+						       __func__, errno);
+						fatal_sigsegv();
+					}
+
+					if (WIFSTOPPED(sstatus) &&
+					    WSTOPSIG(sstatus) == SIGTRAP)
+						break;
+
+					/*
+					 * The stub can be interrupted here, and
+					 * wait_stub_done() tolerates the same
+					 * two signals for the same reason.
+					 * Neither is for the guest: the stub
+					 * installs no handler for either in
+					 * ptrace mode, so delivering one would
+					 * kill it. The step has not happened
+					 * yet, so drop the signal and step
+					 * again, bounded so a stub that will
+					 * never trap still fails rather than
+					 * spins.
+					 */
+					if (WIFSTOPPED(sstatus) &&
+					    ((1 << WSTOPSIG(sstatus)) & STUB_SIG_MASK) &&
+					    ++tries < 16)
+						continue;
+
+					/*
+					 * Anything else means the assumption
+					 * above no longer holds. Fail loudly
+					 * rather than run a guest on registers
+					 * that are quietly wrong.
+					 */
+					printk(UM_KERN_ERR "%s - unexpected status 0x%x stepping off a syscall stop\n",
+					       __func__, sstatus);
+					fatal_sigsegv();
+				}
+
+				if (ptrace_getregs(pid, hidden)) {
+					printk(UM_KERN_ERR "%s - ptrace_getregs after step failed, errno = %d\n",
+					       __func__, errno);
+					fatal_sigsegv();
+				}
+
+				regs->gp[UM_SYSCALL_STOP_HIDDEN_REG] =
+					hidden[UM_SYSCALL_STOP_HIDDEN_REG];
+			}
+#endif
+
 			if (WIFSTOPPED(status)) {
 				sig = WSTOPSIG(status);
 
