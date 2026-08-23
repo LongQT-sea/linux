@@ -460,12 +460,13 @@ void apply_alternatives(struct alt_instr *start, struct alt_instr *end)
 void *text_poke(void *addr, const void *opcode, size_t len)
 {
 	/*
-	 * In UML, the only reference to this function is in
-	 * apply_relocate_add(), which shouldn't ever actually call this
-	 * because UML doesn't have live patching.
+	 * Historically the only reference was apply_relocate_add(), which
+	 * should never actually call this (UML has no live patching).
+	 * The reused x86-64 BPF JIT now legitimately pokes JIT images via
+	 * text_poke_copy()/bpf_arch_text_copy(). With real W^X those images
+	 * are RO+X once finalized, so flip the range writable around the
+	 * copy (UML is UP: the window is not a race).
 	 */
-	WARN_ON(1);
-
 	uml_text_poke_fixup((unsigned long)addr, len, true);
 	memcpy(addr, opcode, len);
 	uml_text_poke_fixup((unsigned long)addr, len, false);

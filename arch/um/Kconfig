@@ -300,3 +300,7 @@ menu "Power management options"
 source "kernel/power/Kconfig"
 
 endmenu
+
+# X86_REQUIRED_FEATURE_*/X86_DISABLED_FEATURE_* consumed by
+# <asm/cpufeaturemasks.h> generation (see arch/um/Makefile)
+source "arch/x86/Kconfig.cpufeatures"

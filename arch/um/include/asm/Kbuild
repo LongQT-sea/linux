@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
+generated-y += cpufeaturemasks.h
 generic-y += bug.h
 generic-y += compat.h
 generic-y += device.h
@@ -15,7 +16,6 @@ generic-y += mmiowb.h
 generic-y += module.h
 generic-y += module.lds.h
 generic-y += parport.h
-generic-y += percpu.h
 generic-y += percpu_types.h
 generic-y += preempt.h
 generic-y += ring_buffer.h

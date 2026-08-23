@@ -113,7 +113,14 @@ endef
 archheaders:
 	$(Q)$(MAKE) -f $(srctree)/Makefile ARCH=$(HEADER_ARCH) asm-generic archheaders
 
-archprepare:
+###
+# <asm/cpufeaturemasks.h> generation (shared rule; ARCH=um never runs
+# x86's archprepare, so the masks are generated under arch/um instead).
+
+cpufeaturemasks.hdr := arch/um/include/generated/asm/cpufeaturemasks.h
+include $(srctree)/arch/x86/Makefile.cpufeaturemasks
+
+archprepare: $(cpufeaturemasks.hdr)
 	$(Q)$(MAKE) $(build)=$(HOST_DIR)/um include/generated/user_constants.h
 
 LINK-$(CONFIG_LD_SCRIPT_STATIC) += -static

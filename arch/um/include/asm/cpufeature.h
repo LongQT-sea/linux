@@ -6,6 +6,7 @@
 
 #if defined(__KERNEL__) && !defined(__ASSEMBLER__)
 
+#include <asm/cpufeaturemasks.h>
 #include <asm/asm.h>
 #include <linux/bitops.h>
 
@@ -112,7 +113,7 @@ t_no:
 (								\
 	__builtin_constant_p(boot_cpu_has(bit)) ?		\
 		boot_cpu_has(bit) :				\
-		_static_cpu_has(bit)				\
+		__static_cpu_has(bit)				\
 )
 
 #define cpu_has_bug(c, bit)		cpu_has(c, (bit))
