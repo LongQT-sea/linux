@@ -139,15 +139,42 @@ static void stop_ptraced_child(int pid, int exitcode)
 	}
 }
 
-static void __init check_sysemu(void)
+/*
+ * Reap a probe child without the fatal() that stop_ptraced_child()
+ * applies, so a capability that is merely absent can be reported as
+ * absent rather than ending the boot.
+ */
+static int __init finish_probe_child(int pid, int exitcode)
 {
-	int pid, n, status, count=0;
+	int status, n;
 
-	os_info("Checking syscall emulation for ptrace...");
+	if (ptrace(PTRACE_CONT, pid, 0, 0) < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, 0);
+		return 0;
+	}
+
+	CATCH_EINTR(n = waitpid(pid, &status, 0));
+	if (n < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != exitcode) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		return 0;
+	}
+	return 1;
+}
+
+/*
+ * The classic probe: PTRACE_SYSEMU stops before the syscall and never
+ * runs it.
+ */
+static int __init try_sysemu(void)
+{
+	int pid, n, status, count = 0;
+
 	pid = start_ptraced_child();
 
-	if ((ptrace(PTRACE_SETOPTIONS, pid, 0,
-		   (void *) PTRACE_O_TRACESYSGOOD) < 0))
+	if (ptrace(PTRACE_SETOPTIONS, pid, 0,
+		   (void *)PTRACE_O_TRACESYSGOOD) < 0)
 		fatal_perror("check_sysemu: PTRACE_SETOPTIONS failed");
 
 	while (1) {
@@ -165,11 +192,9 @@ static void __init check_sysemu(void)
 					  "doesn't singlestep");
 				goto fail;
 			}
-			n = sysdep_ptrace_pokeuser(pid, PT_SYSCALL_RET_OFFSET,
-				   os_getpid());
-			if (n < 0)
-				fatal_perror("check_sysemu : failed to modify "
-					     "system call return");
+			if (sysdep_ptrace_pokeuser(pid, PT_SYSCALL_RET_OFFSET,
+						   os_getpid()) < 0)
+				goto fail;
 			break;
 		}
 		else if (WIFSTOPPED(status) && (WSTOPSIG(status) == SIGTRAP))
@@ -181,15 +206,242 @@ static void __init check_sysemu(void)
 			goto fail;
 		}
 	}
-	stop_ptraced_child(pid, 0);
 
-	os_info("OK\n");
-
-	return;
+	return finish_probe_child(pid, 0);
 
 fail:
-	stop_ptraced_child(pid, 1);
-	fatal("missing\n");
+	kill(pid, SIGKILL);
+	CATCH_EINTR(waitpid(pid, &status, 0));
+	return 0;
+}
+
+/*
+ * The substitute, for hosts without PTRACE_SYSEMU.
+ *
+ * PTRACE_SYSEMU is not doing anything a tracer cannot do for itself:
+ * it stops at syscall entry and declines to execute the call. Writing
+ * -1 into the in-flight syscall number is the documented way to cancel
+ * a syscall from a tracer, and it has been available for as long as
+ * the architecture has had a syscall-number regset: since 3.19 on
+ * arm64, where PTRACE_SYSEMU itself only arrived in 5.3. That gap is
+ * not academic; phones ship a current Android on a years-old kernel.
+ *
+ * -1 is not always accepted, though. arm64 reports the ptrace stop and
+ * THEN runs the seccomp filter, so a filter that screens syscall
+ * numbers sees the number the tracer just wrote. Under an Android app
+ * sandbox -1 is not on the allowlist and the filter kills the tracee
+ * with SIGSYS: syscall cancellation is unavailable in precisely the
+ * environment that also lacks PTRACE_SYSEMU. Substituting a harmless
+ * syscall works there: the guest's call still does not run, which is
+ * the whole requirement, and getppid(2) is a number the filter already
+ * permits, takes no arguments and has no side effects.
+ *
+ * Probing rather than deriving this from a version number is
+ * deliberate: it has to be true of the host actually underneath us,
+ * which may be a container, an emulator, a vendor kernel, or a sandbox
+ * someone else installed a filter into.
+ */
+enum cancel_ret { RET_LEAVE, RET_PARENT_PID, RET_CHILD_PID };
+
+/*
+ * Run, once, exactly what userspace() will do per guest syscall: stop
+ * at entry, cancel or substitute, step off the stop, then set the
+ * return value the guest sees.
+ *
+ * ptrace_child() exits 1 if it saw its own pid from os_getpid() and 0
+ * if it saw its parent's, so what the child does with the value tells
+ * the caller whether each half took effect. Which of the two is the
+ * pass depends on the probe; see try_syscall_cancel().
+ */
+static int __init run_cancel_probe(int cancel_nr, enum cancel_ret ret_mode,
+				   int expect_exit)
+{
+	int pid, n, status, sig;
+
+	pid = start_ptraced_child();
+
+	if (ptrace(PTRACE_SETOPTIONS, pid, 0,
+		   (void *)PTRACE_O_TRACESYSGOOD) < 0)
+		fatal_perror("try_syscall_cancel: PTRACE_SETOPTIONS failed");
+
+	if (ptrace(PTRACE_SYSCALL, pid, 0, 0) < 0)
+		goto fail;
+	CATCH_EINTR(n = waitpid(pid, &status, WUNTRACED));
+	if (n < 0)
+		fatal_perror("try_syscall_cancel: wait failed");
+	if (!WIFSTOPPED(status) || WSTOPSIG(status) != (SIGTRAP | 0x80))
+		goto fail;
+
+	if (sysdep_ptrace_pokeuser(pid, PT_SYSCALL_NR_OFFSET, cancel_nr) < 0)
+		goto fail;
+
+	if (ptrace(PTRACE_SINGLESTEP, pid, 0, 0) < 0)
+		goto fail;
+	CATCH_EINTR(n = waitpid(pid, &status, WUNTRACED));
+	if (n < 0 || !WIFSTOPPED(status))
+		goto fail;
+
+	/*
+	 * A seccomp filter that rejected the number written above
+	 * reports here, as a SIGSYS the tracer is asked to deliver.
+	 * Treat any stop that is not the step as a failure rather than
+	 * passing the signal on: continuing would suppress the SIGSYS
+	 * and let a host that cannot do this look like one that can.
+	 */
+	sig = WSTOPSIG(status);
+	if (sig != SIGTRAP && sig != (SIGTRAP | 0x80))
+		goto fail;
+
+	if (ret_mode != RET_LEAVE &&
+	    sysdep_ptrace_pokeuser(pid, PT_SYSCALL_RET_OFFSET,
+				   ret_mode == RET_PARENT_PID ?
+				   os_getpid() : pid) < 0)
+		goto fail;
+
+	return finish_probe_child(pid, expect_exit);
+
+fail:
+	kill(pid, SIGKILL);
+	CATCH_EINTR(waitpid(pid, &status, 0));
+	return 0;
+}
+
+static int __init try_syscall_cancel(int cancel_nr)
+{
+	if (cancel_nr < 0)
+		/*
+		 * A cancelled syscall leaves -ENOSYS in the return
+		 * register, which is neither pid nor ppid, so one child
+		 * covers both halves: it can only exit 0 if the call
+		 * did not run AND the write below replaced what it left
+		 * behind.
+		 */
+		return run_cancel_probe(cancel_nr, RET_PARENT_PID, 0);
+
+	/*
+	 * A substituted getppid() leaves the parent's pid there by
+	 * itself, the same value a working return-value write would
+	 * store, so one child cannot tell the two apart and each half
+	 * gets its own.
+	 *
+	 * First: substitute and write nothing. The child sees its
+	 * parent's pid only if getppid() ran in place of its
+	 * os_getpid(), so exit 0 means the guest's syscall was really
+	 * replaced.
+	 *
+	 * Second: substitute and write the child's own pid, the one
+	 * value the substitute cannot produce. Exit 1 means the write
+	 * took.
+	 */
+	return run_cancel_probe(cancel_nr, RET_LEAVE, 0) &&
+	       run_cancel_probe(cancel_nr, RET_CHILD_PID, 1);
+}
+
+static int force_no_sysemu __initdata;
+static int force_no_cancel __initdata;
+
+static int __init uml_nosysemu(char *line, int *add)
+{
+	*add = 0;
+	force_no_sysemu = 1;
+	return 0;
+}
+
+__uml_setup("nosysemu", uml_nosysemu,
+"nosysemu\n"
+"    Pretend the host has no PTRACE_SYSEMU and use the syscall-cancellation\n"
+"    path instead. That path exists for hosts older than the kernel that\n"
+"    introduced PTRACE_SYSEMU for the architecture (5.3 on arm64), which\n"
+"    in practice means phones, where a current Android is routinely paired\n"
+"    with a years-old kernel.\n"
+"\n"
+"    Without this option that path can only be exercised by finding such a\n"
+"    host, which is precisely the environment that is hardest to debug on.\n"
+"    With it, every existing test can run against it on any machine.\n\n"
+);
+
+static int __init uml_nocancel(char *line, int *add)
+{
+	*add = 0;
+	force_no_cancel = 1;
+	return 0;
+}
+
+__uml_setup("nocancel", uml_nocancel,
+"nocancel\n"
+"    Pretend the host rejects a cancelled (-1) syscall and substitute a\n"
+"    harmless call for each guest syscall instead. Implies nosysemu.\n"
+"\n"
+"    That is what an Android app sandbox forces, because arm64 runs the\n"
+"    seccomp filter after the ptrace stop and the filter then screens the\n"
+"    number the tracer wrote. Without this option the substitution path can\n"
+"    only be reached on a host that has such a filter installed, which is\n"
+"    the environment that is hardest to debug on.\n\n"
+);
+
+/*
+ * Settle on a way to keep a guest syscall from running, and report
+ * which. Returns 0 if the host offers none.
+ */
+static int __init pick_cancel_method(void)
+{
+	os_info("Checking syscall cancellation instead...");
+	if (force_no_cancel) {
+		os_info("skipped (nocancel)\n");
+	} else if (try_syscall_cancel(-1)) {
+		syscall_cancel_nr = -1;
+		os_info("OK\n");
+		os_info("Host lacks PTRACE_SYSEMU; using PTRACE_SYSCALL with "
+			"syscall cancellation (one extra ptrace call per guest "
+			"syscall)\n");
+		return 1;
+	} else {
+		os_info("refused\n");
+	}
+
+	os_info("Checking syscall substitution instead...");
+	if (try_syscall_cancel(__NR_getppid)) {
+		syscall_cancel_nr = __NR_getppid;
+		os_info("OK\n");
+		os_info("Host lacks PTRACE_SYSEMU and rejects a cancelled (-1) "
+			"syscall, so a seccomp filter is screening syscall "
+			"numbers; an Android app sandbox does this. Running "
+			"getppid(2) in place of each guest syscall instead.\n");
+		return 1;
+	}
+	os_info("missing\n");
+	return 0;
+}
+
+static void __init check_sysemu(void)
+{
+	if (force_no_sysemu || force_no_cancel) {
+		os_info("Checking syscall emulation for ptrace...");
+		os_info("skipped (nosysemu)\n");
+		if (pick_cancel_method()) {
+			have_ptrace_sysemu = 0;
+			return;
+		}
+		fatal("\nnosysemu was requested but this host can neither "
+		      "cancel nor substitute a syscall from a tracer.\n");
+	}
+
+	os_info("Checking syscall emulation for ptrace...");
+	if (try_sysemu()) {
+		have_ptrace_sysemu = 1;
+		os_info("OK\n");
+		return;
+	}
+	os_info("missing\n");
+
+	if (pick_cancel_method()) {
+		have_ptrace_sysemu = 0;
+		return;
+	}
+
+	fatal("\nThis host provides neither PTRACE_SYSEMU nor any way for a "
+	      "tracer to stop a guest syscall from running, and UML cannot "
+	      "intercept guest syscalls without one of them.\n");
 }
 
 static void __init check_ptrace(void)

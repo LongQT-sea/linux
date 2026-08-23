@@ -65,6 +65,16 @@ static int ptrace_dump_regs(int pid)
  */
 #define STUB_SIG_MASK ((1 << SIGALRM) | (1 << SIGWINCH))
 
+/*
+ * Constant form of "does this architecture hide a register at a
+ * syscall stop", usable inside an if condition.
+ */
+#ifdef UM_SYSCALL_STOP_HIDES_REG
+#define UM_SYSCALL_STOP_HIDDEN 1
+#else
+#define UM_SYSCALL_STOP_HIDDEN 0
+#endif
+
 /* Signals that the stub will finish with - anything else is an error */
 #define STUB_DONE_MASK (1 << SIGTRAP)
 
@@ -447,6 +457,13 @@ int using_seccomp;
 /* Backend-interpreted bits for stub_arch_init(); see skas.h. */
 unsigned long stub_arch_init_flags;
 
+/*
+ * Assume the host has PTRACE_SYSEMU until check_sysemu() says
+ * otherwise; see skas.h. arm64 hosts older than 5.3 flip it to 0.
+ */
+int have_ptrace_sysemu = 1;
+int syscall_cancel_nr = -1;
+
 /**
  * start_userspace() - prepare a new userspace process
  * @mm_id: The corresponding struct mm_id
@@ -561,6 +578,32 @@ out_close:
 
 static int unscheduled_userspace_iterations;
 extern unsigned long tt_extra_sched_jiffies;
+
+#ifdef UM_SYSCALL_TRAP_INSN
+/*
+ * Is the guest about to execute the instruction that enters the
+ * kernel?
+ *
+ * Only consulted while single-stepping a guest on a host without
+ * PTRACE_SYSEMU, which is a debugger path, so the extra ptrace call
+ * per step costs nothing that matters. A failed read is reported as
+ * "not a syscall": the instruction is about to be executed by the
+ * guest either way, and if it is unreadable the single-step will fault
+ * on it and be reported normally, which is a better outcome than
+ * refusing to step.
+ */
+static int at_syscall_insn(int pid, unsigned long pc)
+{
+	long word;
+
+	errno = 0;
+	word = ptrace(PTRACE_PEEKTEXT, pid, (void *)pc, 0);
+	if (word == -1 && errno)
+		return 0;
+
+	return (unsigned int)word == UM_SYSCALL_TRAP_INSN;
+}
+#endif
 
 void userspace(struct uml_pt_regs *regs)
 {
@@ -697,10 +740,44 @@ void userspace(struct uml_pt_regs *regs)
 				fatal_sigsegv();
 			}
 
-			if (singlestepping())
+			/*
+			 * Without PTRACE_SYSEMU the guest runs under plain
+			 * PTRACE_SYSCALL and the syscall is cancelled or
+			 * substituted at the entry stop below, which reaches
+			 * the same place: the guest's call does not execute
+			 * and the guest resumes past it with whatever UML
+			 * puts in the return register.
+			 *
+			 * On an architecture without UM_SYSCALL_TRAP_INSN,
+			 * forcing this path (nosysemu) degrades guest
+			 * single-stepping to PTRACE_SYSCALL: with no way to
+			 * recognize the kernel-entry instruction, stepping
+			 * stays at syscall granularity. Guest single-step is
+			 * only the debugger-switch path, and coarse stepping
+			 * there is preferred over ever letting a guest
+			 * syscall run on the host.
+			 */
+			if (!have_ptrace_sysemu) {
+				op = PTRACE_SYSCALL;
+#ifdef UM_SYSCALL_TRAP_INSN
+				/*
+				 * Single-stepping still has to step. The one
+				 * instruction that must not be stepped is the
+				 * one that enters the kernel: stepping it
+				 * would run the guest's syscall on the host.
+				 * Take the syscall stop for that instruction
+				 * instead, so it can be cancelled like any
+				 * other.
+				 */
+				if (singlestepping() &&
+				    !at_syscall_insn(pid, regs->gp[REGS_IP_INDEX]))
+					op = PTRACE_SINGLESTEP;
+#endif
+			} else if (singlestepping()) {
 				op = PTRACE_SYSEMU_SINGLESTEP;
-			else
+			} else {
 				op = PTRACE_SYSEMU;
+			}
 
 			if (ptrace(op, pid, 0, 0)) {
 				printk(UM_KERN_ERR "%s - ptrace continue failed, op = %d, errno = %d\n",
@@ -728,13 +805,16 @@ void userspace(struct uml_pt_regs *regs)
 				fatal_sigsegv();
 			}
 
-#ifdef UM_SYSCALL_STOP_HIDES_REG
 			/*
-			 * One register is not visible at a syscall stop and
+			 * Two independent reasons to single-step off a
+			 * syscall-entry stop before resuming the loop:
+			 *
+			 * On an architecture with UM_SYSCALL_STOP_HIDES_REG,
+			 * one register is not visible at a syscall stop and
 			 * cannot be written there either; see
-			 * UM_SYSCALL_STOP_HIDES_REG in <sysdep/ptrace_user.h>.
-			 * Everything else has just been read correctly, so step
-			 * off the stop and pick up that one register alone.
+			 * <sysdep/ptrace_user.h>. Everything else has just
+			 * been read correctly, so step off the stop and pick
+			 * up that one register alone.
 			 *
 			 * The step runs no guest code: the syscall stays
 			 * emulated away and the program counter does not move.
@@ -754,11 +834,37 @@ void userspace(struct uml_pt_regs *regs)
 			 * register set can be installed, which is what a guest
 			 * thread switch needs and what a syscall stop silently
 			 * refuses.
+			 *
+			 * Without PTRACE_SYSEMU the step is needed on every
+			 * architecture: this stop is a real syscall entry, so
+			 * the call must be cancelled or substituted first and
+			 * the (defused) syscall then stepped over, which also
+			 * consumes what would otherwise surface as a
+			 * syscall-exit stop on the next resume.
 			 */
 			if (WIFSTOPPED(status) &&
-			    WSTOPSIG(status) == (SIGTRAP | 0x80)) {
-				unsigned long hidden[UM_GP_SLOTS];
+			    WSTOPSIG(status) == (SIGTRAP | 0x80) &&
+			    (!have_ptrace_sysemu || UM_SYSCALL_STOP_HIDDEN)) {
 				int sstatus, tries = 0;
+
+				/*
+				 * syscall_cancel_nr is -1, the documented
+				 * "run nothing" value, unless the boot probe
+				 * found the host refuses it, in which case it
+				 * names a harmless syscall to run in the
+				 * guest call's place. See check_sysemu(). The
+				 * registers were read above, so the syscall
+				 * number UML needs has already been taken and
+				 * overwriting it here loses nothing.
+				 */
+				if (!have_ptrace_sysemu &&
+				    sysdep_ptrace_pokeuser(pid,
+							   PT_SYSCALL_NR_OFFSET,
+							   syscall_cancel_nr)) {
+					printk(UM_KERN_ERR "%s - failed to cancel a guest syscall, errno = %d\n",
+					       __func__, errno);
+					fatal_sigsegv();
+				}
 
 				while (1) {
 					if (ptrace(PTRACE_SINGLESTEP, pid, 0, 0)) {
@@ -808,16 +914,21 @@ void userspace(struct uml_pt_regs *regs)
 					fatal_sigsegv();
 				}
 
-				if (ptrace_getregs(pid, hidden)) {
-					printk(UM_KERN_ERR "%s - ptrace_getregs after step failed, errno = %d\n",
-					       __func__, errno);
-					fatal_sigsegv();
-				}
+#ifdef UM_SYSCALL_STOP_HIDES_REG
+				{
+					unsigned long hidden[UM_GP_SLOTS];
 
-				regs->gp[UM_SYSCALL_STOP_HIDDEN_REG] =
-					hidden[UM_SYSCALL_STOP_HIDDEN_REG];
-			}
+					if (ptrace_getregs(pid, hidden)) {
+						printk(UM_KERN_ERR "%s - ptrace_getregs after step failed, errno = %d\n",
+						       __func__, errno);
+						fatal_sigsegv();
+					}
+
+					regs->gp[UM_SYSCALL_STOP_HIDDEN_REG] =
+						hidden[UM_SYSCALL_STOP_HIDDEN_REG];
+				}
 #endif
+			}
 
 			if (WIFSTOPPED(status)) {
 				sig = WSTOPSIG(status);

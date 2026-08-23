@@ -17,6 +17,17 @@ extern int using_seccomp;
  */
 extern unsigned long stub_arch_init_flags;
 
+/*
+ * Whether the host offers PTRACE_SYSEMU, probed by check_sysemu(). Set
+ * once at boot, before any stub exists. Without it the guest runs
+ * under plain PTRACE_SYSCALL and each syscall is stopped at entry and
+ * replaced with syscall_cancel_nr: -1, the documented "run nothing"
+ * value, or a harmless substitute syscall on hosts whose seccomp
+ * filter screens the number a tracer writes.
+ */
+extern int have_ptrace_sysemu;
+extern int syscall_cancel_nr;
+
 extern void new_thread_handler(void);
 extern void handle_syscall(struct uml_pt_regs *regs);
 extern unsigned long current_stub_stack(void);
