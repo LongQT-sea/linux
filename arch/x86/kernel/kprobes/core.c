@@ -49,14 +49,35 @@
 
 #include <asm/text-patching.h>
 #include <asm/cacheflush.h>
+#ifndef CONFIG_UML
 #include <asm/desc.h>
+#include <asm/debugreg.h>
+#endif
 #include <linux/uaccess.h>
 #include <asm/alternative.h>
 #include <asm/insn.h>
-#include <asm/debugreg.h>
 #include <asm/ibt.h>
+#ifdef CONFIG_UML
+#include <asm/nops.h>
+#endif
 
 #include "common.h"
+
+/*
+ * UML reuses this file as a subarch object. Its struct pt_regs has no
+ * named register fields, so the register accesses that must compile
+ * there go through these accessors (same approach as the int3_emulate
+ * helpers in asm/text-patching.h); native x86 object code is unchanged.
+ */
+#ifdef CONFIG_UML
+#define kprobe_regs_ip(regs)	PT_REGS_IP(regs)
+#define kprobe_regs_flags(regs)	PT_REGS_EFLAGS(regs)
+#define kprobe_regs_cx(regs)	PT_REGS_CX(regs)
+#else
+#define kprobe_regs_ip(regs)	((regs)->ip)
+#define kprobe_regs_flags(regs)	((regs)->flags)
+#define kprobe_regs_cx(regs)	((regs)->cx)
+#endif
 
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
@@ -486,19 +507,19 @@ static void kprobe_emulate_ifmodifiers(struct kprobe *p, struct pt_regs *regs)
 {
 	switch (p->ainsn.opcode) {
 	case 0xfa:	/* cli */
-		regs->flags &= ~(X86_EFLAGS_IF);
+		kprobe_regs_flags(regs) &= ~(X86_EFLAGS_IF);
 		break;
 	case 0xfb:	/* sti */
-		regs->flags |= X86_EFLAGS_IF;
+		kprobe_regs_flags(regs) |= X86_EFLAGS_IF;
 		break;
 	case 0x9c:	/* pushf */
-		int3_emulate_push(regs, regs->flags);
+		int3_emulate_push(regs, kprobe_regs_flags(regs));
 		break;
 	case 0x9d:	/* popf */
-		regs->flags = int3_emulate_pop(regs);
+		kprobe_regs_flags(regs) = int3_emulate_pop(regs);
 		break;
 	}
-	regs->ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	kprobe_regs_ip(regs) = kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size;
 }
 NOKPROBE_SYMBOL(kprobe_emulate_ifmodifiers);
 
@@ -510,7 +531,7 @@ NOKPROBE_SYMBOL(kprobe_emulate_ret);
 
 static void kprobe_emulate_call(struct kprobe *p, struct pt_regs *regs)
 {
-	unsigned long ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	unsigned long ip = kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size;
 
 	int3_emulate_call(regs, ip, ip + p->ainsn.rel32);
 }
@@ -518,7 +539,7 @@ NOKPROBE_SYMBOL(kprobe_emulate_call);
 
 static void kprobe_emulate_jmp(struct kprobe *p, struct pt_regs *regs)
 {
-	unsigned long ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	unsigned long ip = kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size;
 
 	ip += p->ainsn.rel32;
 	int3_emulate_jmp(regs, ip);
@@ -527,7 +548,7 @@ NOKPROBE_SYMBOL(kprobe_emulate_jmp);
 
 static void kprobe_emulate_jcc(struct kprobe *p, struct pt_regs *regs)
 {
-	unsigned long ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	unsigned long ip = kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size;
 
 	int3_emulate_jcc(regs, p->ainsn.jcc.type, ip, p->ainsn.rel32);
 }
@@ -535,33 +556,33 @@ NOKPROBE_SYMBOL(kprobe_emulate_jcc);
 
 static void kprobe_emulate_loop(struct kprobe *p, struct pt_regs *regs)
 {
-	unsigned long ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	unsigned long ip = kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size;
 	bool match;
 
 	if (p->ainsn.loop.type != 3) {	/* LOOP* */
 		if (p->ainsn.loop.asize == 32)
-			match = ((*(u32 *)&regs->cx)--) != 0;
+			match = ((*(u32 *)&kprobe_regs_cx(regs))--) != 0;
 #ifdef CONFIG_X86_64
 		else if (p->ainsn.loop.asize == 64)
-			match = ((*(u64 *)&regs->cx)--) != 0;
+			match = ((*(u64 *)&kprobe_regs_cx(regs))--) != 0;
 #endif
 		else
-			match = ((*(u16 *)&regs->cx)--) != 0;
+			match = ((*(u16 *)&kprobe_regs_cx(regs))--) != 0;
 	} else {			/* JCXZ */
 		if (p->ainsn.loop.asize == 32)
-			match = *(u32 *)(&regs->cx) == 0;
+			match = *(u32 *)(&kprobe_regs_cx(regs)) == 0;
 #ifdef CONFIG_X86_64
 		else if (p->ainsn.loop.asize == 64)
-			match = *(u64 *)(&regs->cx) == 0;
+			match = *(u64 *)(&kprobe_regs_cx(regs)) == 0;
 #endif
 		else
-			match = *(u16 *)(&regs->cx) == 0;
+			match = *(u16 *)(&kprobe_regs_cx(regs)) == 0;
 	}
 
 	if (p->ainsn.loop.type == 0)	/* LOOPNE */
-		match = match && !(regs->flags & X86_EFLAGS_ZF);
+		match = match && !(kprobe_regs_flags(regs) & X86_EFLAGS_ZF);
 	else if (p->ainsn.loop.type == 1)	/* LOOPE */
-		match = match && (regs->flags & X86_EFLAGS_ZF);
+		match = match && (kprobe_regs_flags(regs) & X86_EFLAGS_ZF);
 
 	if (match)
 		ip += p->ainsn.rel32;
@@ -569,6 +590,34 @@ static void kprobe_emulate_loop(struct kprobe *p, struct pt_regs *regs)
 }
 NOKPROBE_SYMBOL(kprobe_emulate_loop);
 
+#ifdef CONFIG_UML
+/*
+ * um's pt_regs has no named register fields; offsets are into the
+ * uml_pt_regs gp[] array (same convention as the regoffset table in
+ * arch/x86/um/ptrace.c).
+ */
+#define UM_REGOFF(r)	offsetof(struct pt_regs, regs.gp[HOST_##r])
+static const int addrmode_regoffs[] = {
+	UM_REGOFF(AX),
+	UM_REGOFF(CX),
+	UM_REGOFF(DX),
+	UM_REGOFF(BX),
+	UM_REGOFF(SP),
+	UM_REGOFF(BP),
+	UM_REGOFF(SI),
+	UM_REGOFF(DI),
+#ifdef CONFIG_X86_64
+	UM_REGOFF(R8),
+	UM_REGOFF(R9),
+	UM_REGOFF(R10),
+	UM_REGOFF(R11),
+	UM_REGOFF(R12),
+	UM_REGOFF(R13),
+	UM_REGOFF(R14),
+	UM_REGOFF(R15),
+#endif
+};
+#else
 static const int addrmode_regoffs[] = {
 	offsetof(struct pt_regs, ax),
 	offsetof(struct pt_regs, cx),
@@ -589,12 +638,13 @@ static const int addrmode_regoffs[] = {
 	offsetof(struct pt_regs, r15),
 #endif
 };
+#endif
 
 static void kprobe_emulate_call_indirect(struct kprobe *p, struct pt_regs *regs)
 {
 	unsigned long offs = addrmode_regoffs[p->ainsn.indirect.reg];
 
-	int3_emulate_push(regs, regs->ip - INT3_INSN_SIZE + p->ainsn.size);
+	int3_emulate_push(regs, kprobe_regs_ip(regs) - INT3_INSN_SIZE + p->ainsn.size);
 	int3_emulate_jmp(regs, regs_get_register(regs, offs));
 }
 NOKPROBE_SYMBOL(kprobe_emulate_call_indirect);
@@ -833,7 +883,7 @@ set_current_kprobe(struct kprobe *p, struct pt_regs *regs,
 {
 	__this_cpu_write(current_kprobe, p);
 	kcb->kprobe_saved_flags = kcb->kprobe_old_flags
-		= (regs->flags & X86_EFLAGS_IF);
+		= (kprobe_regs_flags(regs) & X86_EFLAGS_IF);
 }
 
 static void kprobe_post_process(struct kprobe *cur, struct pt_regs *regs,
@@ -872,7 +922,7 @@ static void setup_singlestep(struct kprobe *p, struct pt_regs *regs,
 		 * nor set current_kprobe, because it doesn't use single
 		 * stepping.
 		 */
-		regs->ip = (unsigned long)p->ainsn.insn;
+		kprobe_regs_ip(regs) = (unsigned long)p->ainsn.insn;
 		return;
 	}
 #endif
@@ -890,8 +940,8 @@ static void setup_singlestep(struct kprobe *p, struct pt_regs *regs,
 	}
 
 	/* Disable interrupt, and set ip register on trampoline */
-	regs->flags &= ~X86_EFLAGS_IF;
-	regs->ip = (unsigned long)p->ainsn.insn;
+	kprobe_regs_flags(regs) &= ~X86_EFLAGS_IF;
+	kprobe_regs_ip(regs) = (unsigned long)p->ainsn.insn;
 }
 NOKPROBE_SYMBOL(setup_singlestep);
 
@@ -920,9 +970,9 @@ static void resume_singlestep(struct kprobe *p, struct pt_regs *regs,
 	unsigned long orig_ip = (unsigned long)p->addr;
 
 	/* Restore saved interrupt flag and ip register */
-	regs->flags |= kcb->kprobe_saved_flags;
+	kprobe_regs_flags(regs) |= kcb->kprobe_saved_flags;
 	/* Note that regs->ip is executed int3 so must be a step back */
-	regs->ip += (orig_ip - copy_ip) - INT3_INSN_SIZE;
+	kprobe_regs_ip(regs) += (orig_ip - copy_ip) - INT3_INSN_SIZE;
 }
 NOKPROBE_SYMBOL(resume_singlestep);
 
@@ -980,7 +1030,7 @@ int kprobe_int3_handler(struct pt_regs *regs)
 	if (user_mode(regs))
 		return 0;
 
-	addr = (kprobe_opcode_t *)(regs->ip - sizeof(kprobe_opcode_t));
+	addr = (kprobe_opcode_t *)(kprobe_regs_ip(regs) - sizeof(kprobe_opcode_t));
 	/*
 	 * We don't want to be preempted for the entire duration of kprobe
 	 * processing. Since int3 and debug trap disables irqs and we clear
@@ -1013,8 +1063,8 @@ int kprobe_int3_handler(struct pt_regs *regs)
 		}
 	} else if (kprobe_is_ss(kcb)) {
 		p = kprobe_running();
-		if ((unsigned long)p->ainsn.insn < regs->ip &&
-		    (unsigned long)p->ainsn.insn + MAX_INSN_SIZE > regs->ip) {
+		if ((unsigned long)p->ainsn.insn < kprobe_regs_ip(regs) &&
+		    (unsigned long)p->ainsn.insn + MAX_INSN_SIZE > kprobe_regs_ip(regs)) {
 			/* Most provably this is the second int3 for singlestep */
 			resume_singlestep(p, regs, kcb);
 			kprobe_post_process(p, regs, kcb);
@@ -1031,7 +1081,7 @@ int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
 
-	if (unlikely(regs->ip == (unsigned long)cur->ainsn.insn)) {
+	if (unlikely(kprobe_regs_ip(regs) == (unsigned long)cur->ainsn.insn)) {
 		/* This must happen on single-stepping */
 		WARN_ON(kcb->kprobe_status != KPROBE_HIT_SS &&
 			kcb->kprobe_status != KPROBE_REENTER);
@@ -1042,13 +1092,13 @@ int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 		 * and allow the page fault handler to continue as a
 		 * normal page fault.
 		 */
-		regs->ip = (unsigned long)cur->addr;
+		kprobe_regs_ip(regs) = (unsigned long)cur->addr;
 
 		/*
 		 * If the IF flag was set before the kprobe hit,
 		 * don't touch it:
 		 */
-		regs->flags |= kcb->kprobe_old_flags;
+		kprobe_regs_flags(regs) |= kcb->kprobe_old_flags;
 
 		if (kcb->kprobe_status == KPROBE_REENTER)
 			restore_previous_kprobe(kcb);
@@ -1071,7 +1121,9 @@ int __init arch_init_kprobes(void)
 	return 0;
 }
 
+#ifdef CONFIG_KRETPROBES
 int arch_trampoline_kprobe(struct kprobe *p)
 {
 	return 0;
 }
+#endif
