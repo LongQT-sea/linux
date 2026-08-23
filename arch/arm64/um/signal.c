@@ -54,6 +54,28 @@ struct um_rt_sigframe {
  */
 unsigned long um_minsigstksz = sizeof(struct um_rt_sigframe);
 
+/*
+ * The vDSO's sigreturn trampoline (arch/arm64/um/vdso/sigreturn.S)
+ * describes where the interrupted registers live using CFI offsets it
+ * cannot compute: they are literals in a .S file. If the frame layout
+ * here ever moves, those literals become silently wrong, and the only
+ * symptom is gdb and libunwind producing garbage backtraces out of
+ * signal handlers, which nothing else would notice. Pin them.
+ */
+static void __always_unused um_sigframe_abi_check(void)
+{
+	BUILD_BUG_ON(sizeof(siginfo_t) != 128);
+	BUILD_BUG_ON(offsetof(struct um_rt_sigframe, info) != 0);
+	BUILD_BUG_ON(offsetof(struct um_rt_sigframe, uc_flags) != 128);
+	/* UCONTEXT_MCONTEXT_OFF in sigreturn.S */
+	BUILD_BUG_ON(offsetof(struct um_rt_sigframe, sc) -
+		     offsetof(struct um_rt_sigframe, uc_flags) != 176);
+	/* SIGCONTEXT_REGS_OFF in sigreturn.S */
+	BUILD_BUG_ON(offsetof(struct um_sigcontext, regs) != 8);
+	/* SIGFRAME_REGS_OFF in sigreturn.S is the sum of the three. */
+	BUILD_BUG_ON(offsetof(struct um_rt_sigframe, sc.regs) != 312);
+}
+
 static void build_sc(struct um_sigcontext *sc, struct pt_regs *regs,
 		     struct ksignal *ksig)
 {
