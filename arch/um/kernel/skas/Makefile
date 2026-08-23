@@ -40,6 +40,15 @@ targets += stub_exe.dbg stub_exe $(stub_exe_objs-y)
 CFLAGS_stub.o := $(CFLAGS_NO_HARDENING)
 CFLAGS_stub_exe.o := $(CFLAGS_NO_HARDENING)
 
+# The stub must stay call-closed; -mgeneral-regs-only makes GCC
+# emit out-of-line memset/memcpy calls for aggregate zeroing, which are
+# PC-relative and land nowhere once the stub page is copied to STUB_CODE.
+# The host kernel saves/restores FP state around the stub's signal
+# handlers (sigframe), so SIMD use in the stub is safe.
+# (CFLAGS_REMOVE does not reach UNPROFILE_OBJS: their c_flags are
+# rebuilt from USER_CFLAGS in arch/um/scripts/Makefile.rules.)
+USER_CFLAGS := $(filter-out -mgeneral-regs-only,$(USER_CFLAGS))
+
 # Clang will call memset() from __builtin_alloca() when stack variable
 # initialization is enabled, which is used in stub_exe.c.
 CFLAGS_stub_exe.o += $(call cc-option, -ftrivial-auto-var-init=uninitialized)
