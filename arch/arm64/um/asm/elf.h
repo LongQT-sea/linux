@@ -86,7 +86,29 @@ struct task_struct;
 #define ELF_ET_DYN_BASE (TASK_SIZE / 3 * 2)
 
 extern long elf_aux_hwcap;
-#define ELF_HWCAP (elf_aux_hwcap)
+/*
+ * elf_aux_hwcap mirrors the host's AT_HWCAP verbatim (shared
+ * arch/um/os-Linux/elf_aux.c). Mask out what the port cannot honor:
+ *
+ * - PACA/PACG (bits 30/31): the port's stance is that the guest sees
+ *   a non-PAC CPU. PAC keys do not survive a guest fork (each stub
+ *   process gets fresh host keys), and stray cross-process PAC
+ *   instructions are only emulated on the SIGILL path; a PAC-aware
+ *   guest libc or JIT trusting the hwcap would exercise the emulator
+ *   at scale.
+ *
+ * - SVE (bit 22): only the 528-byte fpsimd record round-trips through
+ *   the signal frames and regsets, so on an SVE host the Z/P upper
+ *   state would leak between guest tasks across context switches.
+ *   The guest must not be told SVE exists. (No AT_HWCAP2 is
+ *   advertised at all, ELF_HWCAP2 is undefined here, so the SVE2
+ *   subfeature bits never reach the guest.)
+ *
+ * Bit numbers are uapi HWCAP_*; the uapi header is deliberately not
+ * included here.
+ */
+#define ELF_HWCAP (elf_aux_hwcap & \
+		   ~((1UL << 30) | (1UL << 31) | (1UL << 22)))
 
 extern char *elf_aux_platform;
 #define ELF_PLATFORM (elf_aux_platform ?: ELF_PLATFORM_FALLBACK)
