@@ -17,6 +17,7 @@ int set_memory_x(unsigned long addr, int numpages);
 int set_memory_nx(unsigned long addr, int numpages);
 
 /* text_poke writable-window helper (ROX'd JIT/trampoline ranges only) */
+bool uml_is_rox_range(unsigned long addr);
 void uml_text_poke_fixup(unsigned long addr, size_t len, bool writable);
 
 /* write to (host r-x) kernel text, e.g. the BPF fentry patch sites */

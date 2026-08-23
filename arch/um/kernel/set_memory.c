@@ -46,7 +46,7 @@ static void rox_range_del(unsigned long start)
 	}
 }
 
-static bool is_rox_range(unsigned long addr)
+bool uml_is_rox_range(unsigned long addr)
 {
 	int i;
 
@@ -104,7 +104,7 @@ void uml_text_poke_fixup(unsigned long addr, size_t len, bool writable)
 	unsigned long start = addr & PAGE_MASK;
 	unsigned long end = PAGE_ALIGN(addr + len);
 
-	if (!is_rox_range(start))
+	if (!uml_is_rox_range(start))
 		return;
 
 	if (writable)
