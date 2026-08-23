@@ -48,11 +48,10 @@ static __always_inline int syscall_handler(int fd_map[STUB_MAX_FDS])
 			else
 				fd = sc->mem.fd;
 
-			res = stub_syscall6(STUB_MMAP_NR,
-					    sc->mem.addr, sc->mem.length,
-					    sc->mem.prot,
-					    MAP_SHARED | MAP_FIXED,
-					    fd, sc->mem.offset);
+			STUB_MMAP_CALL(res, sc->mem.addr, sc->mem.length,
+				       sc->mem.prot,
+				       MAP_SHARED | MAP_FIXED,
+				       fd, sc->mem.offset);
 			if (res != sc->mem.addr) {
 				d->err = res;
 				d->syscall_data_len = i;
