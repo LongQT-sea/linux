@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __UM_ARM64_PTRACE_H
+#define __UM_ARM64_PTRACE_H
+
+/* Regset indices for the arm64 backend */
+enum {
+	REGSET_GENERAL,
+	REGSET_FP,
+};
+
+#include <linux/compiler.h>
+#include <asm/ptrace-generic.h>
+
+#define user_mode(r) UPT_IS_USER(&(r)->regs)
+
+/* syscall number in x8, result in x0 */
+#define PT_REGS_ORIG_SYSCALL(r) ((r)->regs.gp[HOST_X8])
+#define PT_REGS_SYSCALL_RET(r) ((r)->regs.gp[HOST_X0])
+
+/* frame pointer is x29 on arm64 */
+#define PT_REGS_BP(r) ((r)->regs.gp[HOST_X29])
+
+#define PT_FIX_EXEC_STACK(sp) do ; while (0)
+
+#define profile_pc(regs) PT_REGS_IP(regs)
+
+/* svc is 4 bytes; rewind one instruction to restart a syscall */
+#define UPT_RESTART_SYSCALL(r) (UPT_IP(r) -= 4)
+#define PT_REGS_SET_SYSCALL_RETURN(r, res) (PT_REGS_SYSCALL_RET(r) = (res))
+
+static inline long regs_return_value(struct pt_regs *regs)
+{
+	return PT_REGS_SYSCALL_RET(regs);
+}
+
+#define user_stack_pointer(regs) PT_REGS_SP(regs)
+
+struct task_struct;
+extern void arch_switch_to(struct task_struct *to);
+
+#endif /* __UM_ARM64_PTRACE_H */
