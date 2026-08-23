@@ -186,7 +186,16 @@ static int restore_sc(struct pt_regs *regs, struct um_sigcontext __user *from)
 		ur->gp[i] = fixed.regs[i];
 	ur->gp[HOST_SP] = fixed.sp;
 	ur->gp[HOST_PC] = fixed.pc;
-	ur->gp[HOST_PSTATE] = fixed.pstate;
+
+	/*
+	 * PSTATE is filtered the way arch/arm64/kernel/ptrace.c filters
+	 * it for a debugger. Restoring it verbatim from a user-writable
+	 * buffer would let the guest hand itself interrupt-masked or
+	 * non-EL0t state.
+	 */
+	ur->gp[HOST_PSTATE] =
+		(ur->gp[HOST_PSTATE] & ~(unsigned long)UM_PSTATE_WRITABLE) |
+		(fixed.pstate & UM_PSTATE_WRITABLE);
 
 	if (copy_from_user(&hdr, (void __user *)from +
 			 offsetof(struct um_sigcontext, __reserved), sizeof(hdr)))

@@ -18,11 +18,11 @@ unsigned long getreg(struct task_struct *child, int regno)
 
 int putreg(struct task_struct *child, int regno, unsigned long value)
 {
-	/* NZCV is the userspace-writable part of PSTATE */
+	/* Only the flag and hint bits of PSTATE are userspace-writable */
 	if (regno / sizeof(long) == HOST_PSTATE)
-		value = (value & 0xf0000000) |
+		value = (value & UM_PSTATE_WRITABLE) |
 			(task_pt_regs(child)->regs.gp[HOST_PSTATE] &
-			 ~0xf0000000UL);
+			 ~(unsigned long)UM_PSTATE_WRITABLE);
 
 	task_pt_regs(child)->regs.gp[regno / sizeof(long)] = value;
 	return 0;

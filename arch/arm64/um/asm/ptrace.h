@@ -37,6 +37,35 @@ struct user_fpsimd_struct {
 
 #define user_mode(r) UPT_IS_USER(&(r)->regs)
 
+/*
+ * PSTATE flag and hint bits, as in uapi/asm/ptrace.h. Defined here
+ * rather than by including that header: its asm/hwcap.h include
+ * resolves to the native arch/arm64 header under this backend's
+ * include order and drags in the whole cpufeature apparatus.
+ */
+#ifndef PSR_SSBS_BIT
+#define PSR_SSBS_BIT	0x00001000
+#define PSR_DIT_BIT	0x01000000
+#define PSR_TCO_BIT	0x02000000
+#define PSR_V_BIT	0x10000000
+#define PSR_C_BIT	0x20000000
+#define PSR_Z_BIT	0x40000000
+#define PSR_N_BIT	0x80000000
+#endif
+
+/*
+ * Bits of PSTATE that a debugger or a sigreturn frame may set,
+ * mirroring valid_native_regs() in arch/arm64/kernel/ptrace.c.
+ * Anything outside this either names an exception level the guest
+ * cannot be at or masks interrupts it does not own; the host would
+ * sanitise it on PTRACE_SETREGSET regardless, so filtering here keeps
+ * the guest's own view consistent with what will actually be
+ * installed.
+ */
+#define UM_PSTATE_WRITABLE						\
+	(PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT |		\
+	 PSR_SSBS_BIT | PSR_DIT_BIT | PSR_TCO_BIT)
+
 /* syscall number in x8, result in x0 */
 #define PT_REGS_ORIG_SYSCALL(r) ((r)->regs.gp[HOST_X8])
 #define PT_REGS_SYSCALL_RET(r) ((r)->regs.gp[HOST_X0])
