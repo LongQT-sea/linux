@@ -12,7 +12,9 @@
 #include <linux/signal.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include <asm/unistd.h>
+#include <as-layout.h>
 #include <frame_kern.h>
 #include <registers.h>
 #include <skas.h>
@@ -205,5 +207,85 @@ SYSCALL_DEFINE0(rt_sigreturn)
 
 segfault:
 	force_sig(SIGSEGV);
+	return 0;
+}
+
+/*
+ * PAC compatibility for a PAC-compiled guest userland (Ubuntu arm64
+ * builds with -mbranch-protection=standard). A forked guest child runs
+ * on a fresh stub process whose host PAC keys are unrelated to the
+ * parent's; authenticating a parent-signed pointer (the inherited stack
+ * is full of them) FPAC-faults, and the host delivers SIGILL with
+ * ILL_ILLOPN. Emulate the pointer-authentication instructions with
+ * non-PAC semantics: signing is a no-op, authentication strips the PAC
+ * field (canonical 48-bit user address), authenticated return branches
+ * to the stripped x30. Returns nonzero when the SIGILL was such an
+ * instruction and has been emulated.
+ */
+#define PAC_STRIP_MASK	0x0000ffffffffffffUL
+
+int arch_sigill_fixup(struct uml_pt_regs *regs)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long pc = UPT_IP(regs);
+	unsigned long phys;
+	unsigned int insn;
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	if (!mm)
+		return 0;
+
+	pgd = pgd_offset(mm, pc);
+	if (!pgd_val(*pgd))
+		return 0;
+	p4d = p4d_offset(pgd, pc);
+	if (!p4d_val(*p4d))
+		return 0;
+	pud = pud_offset(p4d, pc);
+	if (!pud_val(*pud))
+		return 0;
+	pmd = pmd_offset(pud, pc);
+	if (!pmd_val(*pmd))
+		return 0;
+	pte = pte_offset_kernel(pmd, pc);
+	if (!pte_present(*pte))
+		return 0;
+
+	phys = pte_val(*pte) & PAGE_MASK;
+	insn = *(unsigned int *)((unsigned long)uml_physmem + phys +
+				 (pc & (PAGE_SIZE - 1)));
+
+	switch (insn) {
+	case 0xd503233f:	/* paciasp */
+	case 0xd503237f:	/* pacibsp */
+	case 0xd503211f:	/* pacia1716 */
+	case 0xd503215f:	/* pacib1716 */
+	case 0xd503231f:	/* paciaz */
+	case 0xd503235f:	/* pacibz */
+		/* signing is a no-op */
+		UPT_IP(regs) = pc + 4;
+		return 1;
+	case 0xd50323bf:	/* autiasp */
+	case 0xd50323ff:	/* autibsp */
+	case 0xd503239f:	/* autiaz */
+	case 0xd50323df:	/* autibz */
+	case 0xd50320ff:	/* xpaclri */
+		regs->gp[30] &= PAC_STRIP_MASK;
+		UPT_IP(regs) = pc + 4;
+		return 1;
+	case 0xd503219f:	/* autia1716 */
+	case 0xd50321df:	/* autib1716 */
+		regs->gp[17] &= PAC_STRIP_MASK;
+		UPT_IP(regs) = pc + 4;
+		return 1;
+	case 0xd65f0bff:	/* retaa */
+	case 0xd65f0fff:	/* retab */
+		UPT_IP(regs) = regs->gp[30] & PAC_STRIP_MASK;
+		return 1;
+	}
 	return 0;
 }

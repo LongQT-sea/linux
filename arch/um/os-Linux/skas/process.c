@@ -731,10 +731,16 @@ void userspace(struct uml_pt_regs *regs)
 			case SIGALRM:
 				break;
 			case SIGIO:
-			case SIGILL:
 			case SIGBUS:
 			case SIGFPE:
 			case SIGWINCH:
+				block_signals_trace();
+				(*sig_info[sig])(sig, (struct siginfo *)si, regs, NULL);
+				unblock_signals_trace();
+				break;
+			case SIGILL:
+				if (arch_sigill_fixup(regs))
+					break;
 				block_signals_trace();
 				(*sig_info[sig])(sig, (struct siginfo *)si, regs, NULL);
 				unblock_signals_trace();

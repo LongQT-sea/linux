@@ -367,3 +367,9 @@ long subarch_ptrace_legacy(struct task_struct *child, long request,
 
 	return ret;
 }
+
+/* x86 has no host-ISA instructions that UML emulates on SIGILL. */
+int arch_sigill_fixup(struct uml_pt_regs *regs)
+{
+	return 0;
+}
