@@ -17,5 +17,6 @@ static inline void __user *arch_untagged_si_addr(void __user *addr,
 {
 	return addr;
 }
+#define arch_untagged_si_addr arch_untagged_si_addr
 
 #endif

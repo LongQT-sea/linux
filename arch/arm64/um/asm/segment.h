@@ -7,4 +7,7 @@
 #ifndef __UM_ARM64_SEGMENT_H
 #define __UM_ARM64_SEGMENT_H
 
+/* No segments, no GDT TLS on arm64; the stub TLS array is empty. */
+#define UM_TLS_ENTRIES 0
+
 #endif
