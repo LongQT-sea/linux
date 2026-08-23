@@ -2,6 +2,8 @@
 #ifndef __UM_ARM64_PTRACE_H
 #define __UM_ARM64_PTRACE_H
 
+#ifndef __ASSEMBLER__
+
 /* Regset indices for the arm64 backend */
 enum {
 	REGSET_GENERAL,
@@ -59,5 +61,7 @@ static inline long regs_return_value(struct pt_regs *regs)
 
 struct task_struct;
 extern void arch_switch_to(struct task_struct *to);
+
+#endif /* __ASSEMBLER__ */
 
 #endif /* __UM_ARM64_PTRACE_H */
