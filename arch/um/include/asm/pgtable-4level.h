@@ -9,9 +9,30 @@
 
 #include <asm-generic/pgtable-nop4d.h>
 
+/*
+ * The level geometry derives from PAGE_SHIFT: every page-table page is
+ * one page long and holds PAGE_SIZE/8 entries, i.e. (PAGE_SHIFT - 3) bits
+ * of address space per level.  At PAGE_SIZE=4K this reproduces the
+ * historical hardcoded constants (512 entries, shifts 21/30/39) exactly;
+ * at 16K it yields 2048 entries and shifts 25/36/47.
+ *
+ * The hardcoded constants were silently inconsistent once UML grew a
+ * PAGE_SIZE > 4K backend: with PMD_SHIFT=21 and PTRS_PER_PTE=512 hardcoded,
+ * a 16K page size makes pte_index() span 9 bits while a pmd covers only
+ * 2MB = 128 pages, so pte table slots >= 128 alias the following pmds'
+ * address ranges.  Batch fault paths (do_fault_around clamps its window by
+ * PTRS_PER_PTE) then install counted ptes into such phantom slots, which no
+ * address-driven walk (zap, unmap, exit) can reach; the rss accounting
+ * leaks by exactly the number of batch pages beyond the pmd boundary
+ * (observed as "Bad rss-counter state type:MM_FILEPAGES val:3").
+ */
+
+/* log2 of entries per table page: 8 bytes per entry, one page per table */
+#define UML_PGTABLE_LEVEL_BITS	(PAGE_SHIFT - 3)
+
 /* PGDIR_SHIFT determines what a fourth-level page table entry can map */
 
-#define PGDIR_SHIFT	39
+#define PGDIR_SHIFT	(PAGE_SHIFT + 3 * UML_PGTABLE_LEVEL_BITS)
 #define PGDIR_SIZE	(1UL << PGDIR_SHIFT)
 #define PGDIR_MASK	(~(PGDIR_SIZE-1))
 
@@ -19,7 +40,7 @@
  * map
  */
 
-#define PUD_SHIFT	30
+#define PUD_SHIFT	(PAGE_SHIFT + 2 * UML_PGTABLE_LEVEL_BITS)
 #define PUD_SIZE	(1UL << PUD_SHIFT)
 #define PUD_MASK	(~(PUD_SIZE-1))
 
@@ -27,7 +48,7 @@
  * map
  */
 
-#define PMD_SHIFT	21
+#define PMD_SHIFT	(PAGE_SHIFT + UML_PGTABLE_LEVEL_BITS)
 #define PMD_SIZE	(1UL << PMD_SHIFT)
 #define PMD_MASK	(~(PMD_SIZE-1))
 
@@ -35,10 +56,10 @@
  * entries per page directory level
  */
 
-#define PTRS_PER_PTE 512
-#define PTRS_PER_PMD 512
-#define PTRS_PER_PUD 512
-#define PTRS_PER_PGD 512
+#define PTRS_PER_PTE	(1 << UML_PGTABLE_LEVEL_BITS)
+#define PTRS_PER_PMD	(1 << UML_PGTABLE_LEVEL_BITS)
+#define PTRS_PER_PUD	(1 << UML_PGTABLE_LEVEL_BITS)
+#define PTRS_PER_PGD	(1 << UML_PGTABLE_LEVEL_BITS)
 
 #define USER_PTRS_PER_PGD ((TASK_SIZE + (PGDIR_SIZE - 1)) / PGDIR_SIZE)
 
