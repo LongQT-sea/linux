@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <asm/unistd.h>
 #include <as-layout.h>
 #include <init.h>
@@ -100,6 +101,32 @@ bad_wait:
 	fatal_sigsegv();
 }
 
+/*
+ * Is this stub process actually gone? kill(pid, 0) is not enough: an
+ * unreaped zombie still answers it, and a dead stub on a !SMP guest is
+ * exactly that: nothing reaps it while the only kernel thread is
+ * stuck in the futex wait (mm_sigchld_irq() never gets its SIGCHLD).
+ * A pidfd becomes pollable when the task exits, zombie or not, and
+ * does not depend on the caller being the parent.
+ */
+static bool stub_is_dead(int pid)
+{
+	struct pollfd pfd = { .events = POLLIN };
+	struct timespec ts = { };
+	int fd, res, saved;
+
+	fd = syscall(__NR_pidfd_open, pid, 0);
+	if (fd < 0)
+		return errno == ESRCH;
+
+	pfd.fd = fd;
+	res = syscall(__NR_ppoll, &pfd, 1, &ts, NULL);
+	saved = errno;
+	os_close_file(fd);
+	errno = saved;
+	return res > 0 && (pfd.revents & POLLIN);
+}
+
 void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 {
 	struct stub_data *data = (void *)mm_idp->stack;
@@ -146,6 +173,9 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 		}
 
 		do {
+			struct timespec ts = { .tv_sec = 5 };
+			int pid;
+
 			/*
 			 * We need to check whether the child is still alive
 			 * before and after the FUTEX_WAIT call. Before, in
@@ -157,12 +187,34 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 			 * Either way, if PID is negative, then we have no
 			 * choice but to kill the task.
 			 */
-			if (__READ_ONCE(mm_idp->pid) < 0)
+			pid = __READ_ONCE(mm_idp->pid);
+			if (pid < 0)
 				goto out_kill;
 
 			ret = syscall(__NR_futex, &data->futex,
 				      FUTEX_WAIT, FUTEX_IN_CHILD,
-				      NULL, NULL, 0);
+				      &ts, NULL, 0);
+			if (ret < 0 && errno == ETIMEDOUT) {
+				/*
+				 * Bounded-wait backstop: on !SMP the
+				 * futex wake in mm_sigchld_irq() is
+				 * compiled out, so a dead stub is only
+				 * noticed here if a signal happens to
+				 * interrupt the wait (EINTR) and its
+				 * IRQ gets to run; without that rescue
+				 * the guest hangs here forever. Probe
+				 * the stub; only a genuinely dead one
+				 * breaks the wait, so this can never
+				 * fire spuriously.
+				 */
+				if (stub_is_dead(pid)) {
+					printk(UM_KERN_ERR "%s : stub pid %d died during futex wait\n",
+					       __func__, pid);
+					goto out_kill;
+				}
+				/* Alive but slow to answer; keep waiting. */
+				continue;
+			}
 			if (ret < 0 && errno != EINTR && errno != EAGAIN) {
 				printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
 				       __func__, errno);
