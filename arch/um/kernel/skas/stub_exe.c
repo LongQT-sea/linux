@@ -176,13 +176,8 @@ noinline static void real_init(void)
 				 4, 0),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_munmap,
 				 3, 0),
-#ifdef __i386__
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_set_thread_area,
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_TLS_SYSCALL_NR,
 				 2, 0),
-#else
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_arch_prctl,
-				 2, 0),
-#endif
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_rt_sigreturn,
 				 1, 0),
 

@@ -261,7 +261,7 @@ int singlestepping(void)
 }
 
 /*
- * Only x86 and x86_64 have an arch_align_stack().
+ * Only some architectures have an arch_align_stack().
  * All other arches have "#define arch_align_stack(x) (x)"
  * in their asm/exec.h
  * As this is included in UML from asm-um/system-generic.h,
