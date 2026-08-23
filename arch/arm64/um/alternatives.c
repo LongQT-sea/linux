@@ -13,3 +13,16 @@ void alt_cb_patch_nops(struct alt_instr *alt, __le32 *origptr,
 {
 }
 EXPORT_SYMBOL(alt_cb_patch_nops);
+
+/*
+ * Called by the reused arch/arm64/kernel/module.c on any
+ * .altinstructions section a module carries. No code built for this
+ * configuration emits ALTERNATIVE sequences (arch/arm64/Kconfig, where
+ * every capability and erratum symbol lives, is not sourced for
+ * ARCH=um), so a UML module has no such section and this never runs;
+ * it exists so the shared loader links.
+ */
+int apply_alternatives_module(void *start, size_t length)
+{
+	return 0;
+}
