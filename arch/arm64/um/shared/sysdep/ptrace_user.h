@@ -1,20 +1,74 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Register/ptrace constants for the arm64 UML backend.
- * arm64 ABI: syscall number in x8 (the kernel reloads it into
- * regs->syscallno after each ptrace stop), result in x0, pc/sp/pstate
- * as named.
+ * arm64 ABI: syscall number in x8 at the boundary; the regset marshal
+ * mirrors it into the dead HOST_SYSCALLNO slot, which is what
+ * PT_SYSCALL_NR names (writes to it, e.g. the -ERESTARTSYS guard's
+ * -1, must never reach a live GPR). Result in x0, pc/sp/pstate as named.
  */
+#ifndef __SYSDEP_ARM64_PTRACE_USER_H
+#define __SYSDEP_ARM64_PTRACE_USER_H
+
 #include <generated/user_constants.h>
 
 #define PT_OFFSET(r) ((r) * sizeof(long))
 
-#define PT_SYSCALL_NR(regs) ((regs)[HOST_X8])
-#define PT_SYSCALL_NR_OFFSET PT_OFFSET(HOST_X8)
+#define PT_SYSCALL_NR(regs) ((regs)[HOST_SYSCALLNO])
+#define PT_SYSCALL_NR_OFFSET PT_OFFSET(HOST_SYSCALLNO)
 #define PT_SYSCALL_RET_OFFSET PT_OFFSET(HOST_X0)
 
 #define REGS_IP_INDEX HOST_PC
 #define REGS_SP_INDEX HOST_SP
+
+/*
+ * fpsimd state, two layouts.
+ *
+ * The canonical in-kernel layout of regs->fp is user_fpsimd_state:
+ * {vregs[32], fpsr, fpcr, __reserved[2]}, 528 bytes. It is what the
+ * host NT_PRFPREG regset transfers in ptrace mode and what the guest
+ * NT_PRFPREG regset and core dumps expose, in both modes.
+ *
+ * A sigcontext fpsimd record is instead struct fpsimd_context:
+ * {magic, size, fpsr, fpcr, vregs[32]}, 528 bytes, with vregs at
+ * offset 16. struct um_fpsimd_record mirrors it whole, header
+ * included; a struct for only the part after the 8-byte header would
+ * not do, because natural alignment would put its __uint128_t vregs
+ * at 16 rather than 8 and move every register by 8 bytes. The
+ * seccomp-mode mcontext marshal and the guest sigframe code convert
+ * between the two layouts at their boundaries.
+ *
+ * The os-Linux side compiles against libc headers that do not carry
+ * the kernel's struct names, so both layouts are spelled out here and
+ * pinned to the ABI numbers below; the kernel side additionally checks
+ * um_fpsimd_record against the uapi struct fpsimd_context.
+ */
+struct um_fpsimd_state {
+	__uint128_t vregs[32];
+	unsigned int fpsr;
+	unsigned int fpcr;
+	unsigned int __reserved[2];
+};
+
+struct um_fpsimd_record {
+	unsigned int magic;
+	unsigned int size;
+	unsigned int fpsr;
+	unsigned int fpcr;
+	__uint128_t vregs[32];
+};
+
+#define UM_FPSIMD_STATE_SIZE sizeof(struct um_fpsimd_state)
+#define UM_FPSIMD_RECORD_SIZE sizeof(struct um_fpsimd_record)
+
+_Static_assert(sizeof(struct um_fpsimd_state) == 528 &&
+	       __builtin_offsetof(struct um_fpsimd_state, fpsr) == 512 &&
+	       __builtin_offsetof(struct um_fpsimd_state, fpcr) == 516,
+	       "um_fpsimd_state must match user_fpsimd_state");
+_Static_assert(sizeof(struct um_fpsimd_record) == 528 &&
+	       __builtin_offsetof(struct um_fpsimd_record, fpsr) == 8 &&
+	       __builtin_offsetof(struct um_fpsimd_record, fpcr) == 12 &&
+	       __builtin_offsetof(struct um_fpsimd_record, vregs) == 16,
+	       "um_fpsimd_record must match struct fpsimd_context");
 
 /*
  * glibc may lag the kernel uapi for SYSEMU on arm64 (SYSEMU exists
@@ -26,3 +80,5 @@
 #ifndef PTRACE_SYSEMU_SINGLESTEP
 #define PTRACE_SYSEMU_SINGLESTEP 32
 #endif
+
+#endif /* __SYSDEP_ARM64_PTRACE_USER_H */
