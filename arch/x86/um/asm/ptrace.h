@@ -93,11 +93,14 @@ static inline int ptrace_set_thread_area(struct task_struct *child, int idx,
 
 extern long arch_prctl(struct task_struct *task, int option,
 		       unsigned long __user *addr);
-
 #endif
 
 #define user_stack_pointer(regs) PT_REGS_SP(regs)
 
 extern void arch_switch_to(struct task_struct *to);
+
+/* Legacy USER-area ptrace requests (shared by both BITS) */
+long subarch_ptrace_legacy(struct task_struct *child, long request,
+			   unsigned long addr, unsigned long data);
 
 #endif /* __UM_X86_PTRACE_H */

@@ -210,6 +210,9 @@ long subarch_ptrace(struct task_struct *child, long request,
 		/* XXX Calls ptrace on the host - needs some SMP thinking */
 		ret = arch_prctl(child, data, (void __user *) addr);
 		break;
+	default:
+		ret = subarch_ptrace_legacy(child, request, addr, data);
+		break;
 	}
 
 	return ret;
