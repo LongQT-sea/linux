@@ -24,6 +24,7 @@
 #include <asm/processor.h>
 #include <asm/cpufeature.h>
 #include <asm/sections.h>
+#include <asm/set_memory.h>
 #include <asm/setup.h>
 #include <asm/text-patching.h>
 #include <as-layout.h>
@@ -465,7 +466,10 @@ void *text_poke(void *addr, const void *opcode, size_t len)
 	 */
 	WARN_ON(1);
 
-	return memcpy(addr, opcode, len);
+	uml_text_poke_fixup((unsigned long)addr, len, true);
+	memcpy(addr, opcode, len);
+	uml_text_poke_fixup((unsigned long)addr, len, false);
+	return addr;
 }
 
 void *text_poke_copy(void *addr, const void *opcode, size_t len)
