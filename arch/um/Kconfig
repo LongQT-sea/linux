@@ -26,6 +26,9 @@ config UML
 	select HAVE_DEBUG_KMEMLEAK
 	select HAVE_DEBUG_BUGVERBOSE
 	select HAVE_PAGE_SIZE_4KB
+	# arm64 hosts may run 16K pages; UML guest pages must match the
+	# host, so offer the choice on UML_ARM64 (4KB stays the default).
+	select HAVE_PAGE_SIZE_16KB if UML_ARM64
 	select NO_DMA if !UML_DMA_EMULATION
 	select OF_EARLY_FLATTREE if OF
 	select GENERIC_IRQ_SHOW
