@@ -53,18 +53,18 @@ noinline static void real_init(void)
 		stub_syscall3(__NR_fcntl, 0, F_SETFL, O_NONBLOCK);
 
 	/* map stub code + data */
-	res = stub_syscall6(STUB_MMAP_NR,
-			    init_data.stub_start, UM_KERN_PAGE_SIZE,
-			    PROT_READ | PROT_EXEC, MAP_FIXED | MAP_SHARED,
-			    init_data.stub_code_fd, init_data.stub_code_offset);
+	STUB_MMAP_CALL(res,
+		       init_data.stub_start, UM_KERN_PAGE_SIZE,
+		       PROT_READ | PROT_EXEC, MAP_FIXED | MAP_SHARED,
+		       init_data.stub_code_fd, init_data.stub_code_offset);
 	if (res != init_data.stub_start)
 		stub_syscall1(__NR_exit, 11);
 
-	res = stub_syscall6(STUB_MMAP_NR,
-			    init_data.stub_start + UM_KERN_PAGE_SIZE,
-			    STUB_DATA_PAGES * UM_KERN_PAGE_SIZE,
-			    PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED,
-			    init_data.stub_data_fd, init_data.stub_data_offset);
+	STUB_MMAP_CALL(res,
+		       init_data.stub_start + UM_KERN_PAGE_SIZE,
+		       STUB_DATA_PAGES * UM_KERN_PAGE_SIZE,
+		       PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED,
+		       init_data.stub_data_fd, init_data.stub_data_offset);
 	if (res != init_data.stub_start + UM_KERN_PAGE_SIZE)
 		stub_syscall1(__NR_exit, 12);
 

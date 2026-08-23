@@ -16,6 +16,11 @@
 #define STUB_TLS_SYSCALL_NR __NR_set_thread_area
 #define MMAP_OFFSET(o) ((o) >> UM_KERN_PAGE_SHIFT)
 
+/* Backend mmap invocation: default direct 6-arg syscall form. */
+#define STUB_MMAP_CALL(res, addr, len, prot, flags, fd, off)		\
+	((res) = stub_syscall6(STUB_MMAP_NR, (addr), (len), (prot),	\
+			       (flags), (fd), (off)))
+
 static __always_inline long stub_syscall0(long syscall)
 {
 	long ret;
