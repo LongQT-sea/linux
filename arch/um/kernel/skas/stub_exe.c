@@ -50,6 +50,13 @@ static noinline void __attribute__((used)) real_init(void)
 	else
 		stub_syscall3(__NR_fcntl, 0, F_SETFL, O_NONBLOCK);
 
+	/*
+	 * Whatever this architecture has to settle in a fresh stub,
+	 * before the seccomp filter is installed and so still able to
+	 * make any syscall.
+	 */
+	stub_arch_init(init_data.arch_flags);
+
 	/* map stub code + data */
 	STUB_MMAP_CALL(res,
 		       init_data.stub_start, UM_KERN_PAGE_SIZE,
