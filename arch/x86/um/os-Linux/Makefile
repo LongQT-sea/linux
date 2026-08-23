@@ -3,7 +3,7 @@
 # Licensed under the GPL
 #
 
-obj-y = registers.o mcontext.o
+obj-y = registers.o mcontext.o machinename.o
 
 obj-$(CONFIG_X86_32) += tls.o
 
