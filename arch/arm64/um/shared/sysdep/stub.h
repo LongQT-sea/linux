@@ -181,4 +181,9 @@ stub_seccomp_restore_state(struct stub_data_arch *arch)
 	arch->sync = 0;
 }
 
+extern void stub_segv_handler(int, siginfo_t *, void *);
+extern void stub_syscall_handler(void);
+extern void stub_signal_interrupt(int, siginfo_t *, void *);
+extern void stub_signal_restorer(void);
+
 #endif
