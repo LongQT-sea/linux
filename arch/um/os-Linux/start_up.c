@@ -509,7 +509,13 @@ void  __init get_host_cpu_features(
 	}
 }
 
-static int seccomp_config __initdata;
+/*
+ * arm64 UML supports the seccomp userspace only: its SYSEMU fallback
+ * never creates runnable children, so default to "on" there (a boot
+ * that cannot probe seccomp fails loudly instead of limping into the
+ * broken mode). x86 keeps the upstream default (off).
+ */
+static int seccomp_config __initdata = IS_ENABLED(CONFIG_UML_ARM64) ? 2 : 0;
 
 static int __init uml_seccomp_config(char *line, int *add)
 {
