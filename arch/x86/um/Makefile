@@ -35,6 +35,20 @@ endif
 
 subarch-$(CONFIG_MODULES) += ../kernel/module.o
 
+obj-y += capflags.o
+
+# capflags.c maps x86 feature bits to names for /proc/cpuinfo; it is
+# backend content, generated from the x86 feature headers.
+quiet_cmd_mkcapflags = MKCAP   $@
+      cmd_mkcapflags = $(CONFIG_SHELL) $(srctree)/arch/x86/kernel/cpu/mkcapflags.sh $@ $^
+
+cpufeature = $(srctree)/arch/x86/include/asm/cpufeatures.h
+vmxfeature = $(srctree)/arch/x86/include/asm/vmxfeatures.h
+
+targets += capflags.c
+$(obj)/capflags.c: $(cpufeature) $(vmxfeature) $(srctree)/arch/x86/kernel/cpu/mkcapflags.sh FORCE
+	$(call if_changed,mkcapflags)
+
 USER_OBJS := bugs_$(BITS).o ptrace_user.o fault.o
 
 $(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS) \
