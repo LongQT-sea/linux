@@ -303,3 +303,67 @@ static int __init init_regset_xstate_info(void)
 	return 0;
 }
 arch_initcall(init_regset_xstate_info);
+
+/*
+ * Legacy USER-area ptrace requests, moved out of arch/um's arch_ptrace:
+ * the GP-block GETREGS/SETREGS loops (getreg/putreg live in the
+ * per-BITS files), the GDT TLS requests (inline stubs on x86_64, real
+ * ones on i386), and SYSEMU (not emulated for UML guests). Behavior is
+ * preserved verbatim, including the ignored __put_user returns.
+ */
+#include <linux/uaccess.h>
+#include <linux/ptrace.h>
+#include <asm/ptrace.h>
+#include <asm/ptrace-abi.h>
+#include <asm/ptrace-generic.h>
+#include <registers.h>
+#include <generated/user_constants.h>
+
+long subarch_ptrace_legacy(struct task_struct *child, long request,
+			   unsigned long addr, unsigned long data)
+{
+	void __user *vp = (void __user *) data;
+	unsigned long __user *p = vp;
+	int i, ret = -EIO;
+
+	switch (request) {
+	case PTRACE_SYSEMU:
+	case PTRACE_SYSEMU_SINGLESTEP:
+		break;
+#ifdef PTRACE_GETREGS
+	case PTRACE_GETREGS: { /* Get all gp regs from the child. */
+		if (!access_ok(p, MAX_REG_OFFSET))
+			break;
+		for (i = 0; i < MAX_REG_OFFSET; i += sizeof(long)) {
+			__put_user(getreg(child, i), p);
+			p++;
+		}
+		ret = 0;
+		break;
+	}
+#endif
+#ifdef PTRACE_SETREGS
+	case PTRACE_SETREGS: { /* Set all gp regs in the child. */
+		unsigned long tmp = 0;
+
+		if (!access_ok(p, MAX_REG_OFFSET))
+			break;
+		for (i = 0; i < MAX_REG_OFFSET; i += sizeof(long)) {
+			__get_user(tmp, p);
+			putreg(child, i, tmp);
+			p++;
+		}
+		ret = 0;
+		break;
+	}
+#endif
+	case PTRACE_GET_THREAD_AREA:
+		ret = ptrace_get_thread_area(child, addr, vp);
+		break;
+	case PTRACE_SET_THREAD_AREA:
+		ret = ptrace_set_thread_area(child, addr, vp);
+		break;
+	}
+
+	return ret;
+}
