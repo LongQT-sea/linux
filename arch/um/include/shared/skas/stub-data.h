@@ -69,8 +69,9 @@ struct stub_data {
 	/* seccomp architecture specific state restore */
 	struct stub_data_arch arch_data;
 
-	/* Stack for our signal handlers and for calling into . */
-	unsigned char sigstack[UM_KERN_PAGE_SIZE] __aligned(UM_KERN_PAGE_SIZE);
+	/* Stack for our signal handlers and for calling into .
+	 * Sized per backend: arm64's signal frame exceeds one page. */
+	unsigned char sigstack[UM_STUB_SIGSTACK_PAGES * UM_KERN_PAGE_SIZE] __aligned(UM_KERN_PAGE_SIZE);
 };
 
 #endif

@@ -23,7 +23,12 @@
 #define STUB_START stub_start
 #define STUB_CODE STUB_START
 #define STUB_DATA (STUB_CODE + UM_KERN_PAGE_SIZE)
-#define STUB_DATA_PAGES 2
+/* Backends with a fat sigcontext (arm64: 4384-byte mcontext_t) need a
+ * bigger stub signal stack; the count comes from user_constants. */
+#ifndef UM_STUB_SIGSTACK_PAGES
+#define UM_STUB_SIGSTACK_PAGES 1
+#endif
+#define STUB_DATA_PAGES (1 + UM_STUB_SIGSTACK_PAGES)
 #define STUB_SIZE ((1 + STUB_DATA_PAGES) * UM_KERN_PAGE_SIZE)
 #define STUB_END (STUB_START + STUB_SIZE)
 

@@ -60,6 +60,13 @@ void foo(void)
 	OFF(HOST_PSTATE, pstate);
 
 	DEFINE(UM_FRAME_SIZE, sizeof(struct user_regs_struct));
+
+	/* arm64's sigcontext carries a 4384-byte mcontext_t; with siginfo
+	 * and the ucontext header the signal frame is ~4.7KB and does not
+	 * fit UML's one-page stub sigstack (x86's ~2.5KB frame does).
+	 * Two pages, or mctx_offset underflows past the array. */
+	DEFINE(UM_STUB_SIGSTACK_PAGES, 2);
+
 	DEFINE(UM_POLLIN, POLLIN);
 	DEFINE(UM_POLLPRI, POLLPRI);
 	DEFINE(UM_POLLOUT, POLLOUT);
