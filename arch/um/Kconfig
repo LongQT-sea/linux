@@ -197,7 +197,7 @@ config MCONSOLE
 	default y
 	help
 	  The user mode linux management console is a low-level interface to
-	  the kernel, somewhat like the i386 SysRq interface.  Since there is
+	  the kernel, somewhat like the native SysRq interface.  Since there is
 	  a full-blown operating system running under every user mode linux
 	  instance, there is much greater flexibility possible than with the
 	  SysRq mechanism.

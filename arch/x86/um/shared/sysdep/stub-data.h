@@ -8,7 +8,7 @@
 
 struct stub_data_arch {
 	int sync;
-	struct user_desc tls[UM_KERN_GDT_ENTRY_TLS_ENTRIES];
+	struct user_desc tls[UM_KERN_TLS_ENTRIES];
 };
 #else
 #define STUB_SYNC_FS_BASE (1 << 0)

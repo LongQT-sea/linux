@@ -13,6 +13,9 @@
 #include <asm/prctl.h>
 
 #define STUB_MMAP_NR __NR_mmap
+
+/* TLS restore syscall the stub filter must allow (backend-provided) */
+#define STUB_TLS_SYSCALL_NR __NR_arch_prctl
 #define MMAP_OFFSET(o) (o)
 
 #define __syscall_clobber "r11","rcx","memory"
