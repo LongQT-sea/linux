@@ -32,6 +32,7 @@ obj-$(CONFIG_STACKTRACE) += stacktrace.o
 obj-$(CONFIG_SMP) += smp.o
 obj-y += set_memory.o
 obj-y += execmem.o
+obj-$(CONFIG_BPF_JIT) += bpf_jit_shim.o
 
 USER_OBJS := config.o
 
