@@ -596,11 +596,16 @@ void chan_interrupt(struct line *line, int irq)
 	} while (err > 0);
 
 	if (err == -EIO) {
-		if (chan->primary) {
+		if (chan->primary)
 			tty_port_tty_hangup(&line->port, false);
-			if (line->chan_out != chan)
-				close_one_chan(line->chan_out, 1);
-		}
+		/*
+		 * Close only the input side that hit EOF. The output channel
+		 * is an independent resource: stdin hitting EOF (a redirected
+		 * file or pipe, as in scripted boots) must not kill console
+		 * output. Closing line->chan_out here left the system console
+		 * writing to a closed fd, silently discarding all console
+		 * output while the kernel kept running.
+		 */
 		close_one_chan(chan, 1);
 		if (chan->primary)
 			return;
