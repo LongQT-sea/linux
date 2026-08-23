@@ -26,9 +26,6 @@ extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long,
 	[nr] = sym,
 #define __SYSCALL_WITH_COMPAT(nr, native, compat) __SYSCALL(nr, native)
 
-/* Not yet implemented: the arm64 signal frame is the next surface. */
-#define sys_rt_sigreturn sys_ni_syscall
-
 const sys_call_ptr_t sys_call_table[] ____cacheline_aligned = {
 	[0 ... __NR_syscalls - 1] = sys_ni_syscall,
 #include <asm/syscall_table_64.h>

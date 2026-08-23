@@ -9,8 +9,10 @@
 #include <linux/init.h>
 #include <asm/page.h>
 #include <asm/elf.h>
+#include "vdso-offsets.h"
 
 unsigned long um_vdso_addr;
+unsigned long um_vdso_sigreturn;
 static struct page *um_vdso;
 
 extern unsigned long task_size;
@@ -21,6 +23,7 @@ static int __init init_vdso(void)
 	BUG_ON(vdso_end - vdso_start > PAGE_SIZE);
 
 	um_vdso_addr = task_size - PAGE_SIZE;
+	um_vdso_sigreturn = um_vdso_addr + VDSO_SIGRETURN_OFF;
 
 	um_vdso = alloc_page(GFP_KERNEL);
 	if (!um_vdso)
