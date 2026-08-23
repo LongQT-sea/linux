@@ -598,6 +598,7 @@ static void __init check_stub_sigstack(void)
 void __init os_early_checks(void)
 {
 	int pid;
+	long host_page_size;
 
 	/* Print out the core dump limits early */
 	check_coredump_limit();
@@ -608,6 +609,22 @@ void __init os_early_checks(void)
 	 * kernel is running.
 	 */
 	check_tmpexec();
+
+	/*
+	 * The guest page size must be at least the host's: UML mirrors
+	 * guest page tables with per-guest-page host mmap/mprotect ops
+	 * (tlb.c), which cannot express sub-host-page granularity.  A
+	 * smaller guest page only fails later, as a mapping fault far
+	 * from the cause. Refuse to boot instead, naming both sizes.
+	 * A larger guest page is fine (one op spans several host pages).
+	 */
+	host_page_size = sysconf(_SC_PAGESIZE);
+	if (host_page_size > UM_KERN_PAGE_SIZE)
+		fatal("Host page size (%ld) exceeds the UML guest page size (%d);\n"
+		      "rebuild UML with a page size of at least %ldK, or run on a\n"
+		      "host with %dK or smaller pages.\n",
+		      host_page_size, UM_KERN_PAGE_SIZE,
+		      host_page_size / 1024, UM_KERN_PAGE_SIZE / 1024);
 
 	if (seccomp_config) {
 		if (init_seccomp()) {
