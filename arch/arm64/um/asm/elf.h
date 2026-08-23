@@ -70,8 +70,13 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 	int uses_interp);
 
 extern unsigned long um_vdso_addr;
+extern unsigned long um_minsigstksz;
 #define AT_SYSINFO_EHDR 33
-#define ARCH_DLINFO	NEW_AUX_ENT(AT_SYSINFO_EHDR, um_vdso_addr)
+#define ARCH_DLINFO \
+	NEW_AUX_ENT(AT_SYSINFO_EHDR, um_vdso_addr); \
+	NEW_AUX_ENT(AT_MINSIGSTKSZ, um_minsigstksz)
+/* NEW_AUX_ENT count in ARCH_DLINFO (x86 UM leaves this 0 and relies on slack) */
+#define AT_VECTOR_SIZE_ARCH 2
 
 #define ELF_NGREG (sizeof(struct user_regs_struct) / sizeof(elf_greg_t))
 typedef elf_greg_t elf_gregset_t[ELF_NGREG];
