@@ -173,8 +173,12 @@ int get_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	xstate_size = fp_size;
 #endif
 
-	if (fp_size_out)
+	if (fp_size_out) {
+		/* Size-probe call: report the frame size and return without
+		 * copying; regs may be allocated for the bare struct here. */
 		*fp_size_out = xstate_size;
+		return 0;
+	}
 
 	if (xstate_size > host_fp_size)
 		return -ENOSPC;

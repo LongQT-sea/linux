@@ -68,3 +68,19 @@ const char *ptrace_reg_name(int idx)
 	}
 	return "";
 }
+
+long sysdep_ptrace_peekuser(long pid, long off, long *val)
+{
+	errno = 0;
+	*val = ptrace(PTRACE_PEEKUSER, pid, off, 0);
+	if (*val == -1 && errno)
+		return -errno;
+	return 0;
+}
+
+long sysdep_ptrace_pokeuser(long pid, long off, long val)
+{
+	if (ptrace(PTRACE_POKEUSER, pid, off, val) < 0)
+		return -errno;
+	return 0;
+}

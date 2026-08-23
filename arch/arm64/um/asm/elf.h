@@ -45,6 +45,7 @@ typedef unsigned long elf_greg_t;
 	int _i; \
 	for (_i = 0; _i < 31; _i++) \
 		(regs)->regs.gp[_i] = 0; \
+	(regs)->regs.gp[HOST_TLS] = 0; /* exec resets TPIDR_EL0 */ \
 } while (0)
 
 static inline void um_elf_core_copy_regs(elf_greg_t *pr_reg,
