@@ -1,0 +1,66 @@
+UML selftests
+=============
+
+Host-runnable tests that exercise a built User Mode Linux binary: boot,
+process management, memory faults, signal frames, TLS across fork,
+syscall restart, module load/unload, and a syscall/fault
+microbenchmark.  Every test runs in both UML userspace modes (ptrace
+and seccomp) and reports TAP, skipping cleanly when a mode or feature
+is unavailable.
+
+Quick start
+-----------
+
+Build a UML kernel (any recent x86_64 host):
+
+    make ARCH=um defconfig
+    ./scripts/config --file .config -m TEST_LKM	 # for the module test
+    make ARCH=um olddefconfig
+    make ARCH=um -j$(nproc) linux modules
+
+Build and run the suite against it:
+
+    cd tools/testing/selftests/um
+    make
+    UML_BIN=/path/to/build/linux ./um_boot_test.sh
+    UML_BIN=/path/to/build/linux ./um_core_test.sh
+    UML_BIN=/path/to/build/linux ./um_module_test.sh
+    UML_BIN=/path/to/build/linux ./um_bench_test.sh
+
+or through the kselftest runner:
+
+    make -C tools/testing/selftests TARGETS=um run_tests \
+	UML_BIN=/path/to/build/linux
+
+The `config` fragment in this directory lists the kernel options the
+full suite wants (only CONFIG_HOSTFS is a hard requirement; everything
+else degrades to TAP SKIP).
+
+Mechanism
+---------
+
+Each test boots $UML_BIN with a static payload binary as init on a
+hostfs root pointing at a scratch directory.  The payload writes its
+per-subtest results to /result.tap, which lands in the scratch
+directory on the host; the runner relays them as TAP.  Success is the
+payload's completion marker plus a boot log free of kernel
+diagnostics -- never the UML process's exit code, which proves nothing.
+
+Knobs (environment): UML_BIN (required), UML_MODES ("ptrace seccomp"),
+UML_MEM, UML_TIMEOUT, UML_EXTRA_ARGS, UML_TEST_KO (module test),
+UML_BENCH_BOOTS / UML_WRAP (benchmark; use UML_WRAP="taskset -c ..."
+to pin on heterogeneous-core machines).
+
+ARM64 (or other foreign-arch) UML
+---------------------------------
+
+qemu-user cannot host UML -- it emulates neither ptrace of guest
+children nor guest seccomp filters, which are exactly the mechanisms
+UML's process model is built from.  um_arm64_rig.sh instead boots a
+real arm64 kernel under qemu-system-aarch64 (TCG) and runs the UML
+binary and the same payloads inside it, extracting one TAP stream from
+the serial console.  It needs qemu-system-aarch64, an arm64 guest
+kernel Image, a static arm64 busybox, and payloads cross-built with
+`make CROSS_COMPILE=aarch64-linux-gnu-`; see the header of
+um_arm64_rig.sh for the exact knobs.  Do not benchmark under TCG: the
+numbers measure qemu.
