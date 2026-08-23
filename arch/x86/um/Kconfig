@@ -31,6 +31,7 @@ config X86_32
 config X86_64
 	def_bool 64BIT
 	select MODULES_USE_ELF_RELA
+	select HAVE_ARCH_KASAN
 
 config ARCH_HAS_SC_SIGNALS
 	def_bool !64BIT
