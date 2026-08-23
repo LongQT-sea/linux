@@ -46,6 +46,14 @@ struct um_rt_sigframe {
 	struct um_sigcontext sc;
 };
 
+/*
+ * Advertised to guest userland via AT_MINSIGSTKSZ (asm/elf.h
+ * ARCH_DLINFO): the exact bytes a signal frame occupies on the guest
+ * stack, so a guest libc sizes alternate signal stacks against reality
+ * (native arm64 reports 0x1270; this frame carries no SVE headroom).
+ */
+unsigned long um_minsigstksz = sizeof(struct um_rt_sigframe);
+
 static void build_sc(struct um_sigcontext *sc, struct pt_regs *regs,
 		     struct ksignal *ksig)
 {
