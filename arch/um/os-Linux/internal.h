@@ -4,7 +4,6 @@
 
 #include <mm_id.h>
 #include <stub-data.h>
-#include <signal.h>
 
 /*
  * elf_aux.c
