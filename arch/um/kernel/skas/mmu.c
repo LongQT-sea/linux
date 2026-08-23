@@ -136,6 +136,16 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				stub_data->futex = FUTEX_IN_KERN;
 #if IS_ENABLED(CONFIG_SMP)
 				os_futex_wake(&stub_data->futex);
+#else
+				/*
+				 * On !SMP the wake is skipped: a futex
+				 * waiter in wait_stub_done_seccomp() is
+				 * rescued by a signal interrupting its
+				 * wait (EINTR) or by the bounded-wait
+				 * liveness probe there (pidfd poll on
+				 * timeout), which turns a dead stub
+				 * into a loud failure either way.
+				 */
 #endif
 
 				/*
