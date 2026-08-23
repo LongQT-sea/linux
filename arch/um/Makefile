@@ -6,33 +6,22 @@
 # Licensed under the GPL
 #
 
-# select defconfig based on actual architecture
-ifeq ($(SUBARCH),x86)
-  ifeq ($(shell uname -m),x86_64)
-        KBUILD_DEFCONFIG := x86_64_defconfig
-  else
-        KBUILD_DEFCONFIG := i386_defconfig
-  endif
-else
-        KBUILD_DEFCONFIG := $(SUBARCH)_defconfig
-endif
-
 ARCH_DIR := arch/um
 # We require bash because the vmlinux link and loader script cpp use bash
 # features.
 SHELL := bash
 
+# Backend dispatch: a SUBARCH names its backend tree in
+# $(ARCH_DIR)/subarch/<subarch>.mk (HEADER_ARCH, optionally
+# KBUILD_DEFCONFIG). With no registry file the SUBARCH is its own
+# backend (HEADER_ARCH = SUBARCH, defconfig <subarch>_defconfig).
+# A new host architecture only adds a registry file (if it aliases an
+# existing backend); this Makefile stays host-ISA-free.
+-include $(srctree)/$(ARCH_DIR)/subarch/$(SUBARCH).mk
+HEADER_ARCH ?= $(SUBARCH)
+KBUILD_DEFCONFIG ?= $(SUBARCH)_defconfig
+
 MODE_INCLUDE	+= -I$(srctree)/$(ARCH_DIR)/include/shared/skas
-
-HEADER_ARCH 	:= $(SUBARCH)
-
-ifneq ($(filter $(SUBARCH),x86 x86_64 i386),)
-	HEADER_ARCH := x86
-endif
-
-ifdef CONFIG_64BIT
-	KBUILD_CFLAGS += -mcmodel=large
-endif
 
 HOST_DIR := arch/$(HEADER_ARCH)
 
