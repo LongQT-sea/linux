@@ -13,6 +13,8 @@
 
 #define STUB_MMAP_NR __NR_mmap2
 
+#define UM_SA_RESTORER 0x04000000 /* SA_RESTORER (x86 uapi) */
+
 /* TLS restore syscall the stub filter must allow (backend-provided) */
 #define STUB_TLS_SYSCALL_NR __NR_set_thread_area
 #define MMAP_OFFSET(o) ((o) >> UM_KERN_PAGE_SHIFT)
@@ -152,6 +154,16 @@ stub_seccomp_restore_state(struct stub_data_arch *arch)
 	}
 
 	arch->sync = 0;
+}
+
+/* See stub_64.h: x86 returns via the SA_RESTORER trampoline. */
+static __always_inline void stub_signal_return(void *frame)
+{
+}
+
+/* See stub_64.h: x86 learns TLS via arch_prctl; nothing to save. */
+static __always_inline void stub_seccomp_save_state(struct stub_data_arch *arch)
+{
 }
 
 #endif

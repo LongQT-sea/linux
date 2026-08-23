@@ -15,6 +15,8 @@
 
 #define STUB_MMAP_NR __NR_mmap
 
+#define UM_SA_RESTORER 0x04000000 /* SA_RESTORER (x86 uapi) */
+
 /* TLS restore syscall the stub filter must allow (backend-provided) */
 #define STUB_TLS_SYSCALL_NR __NR_arch_prctl
 #define MMAP_OFFSET(o) (o)
@@ -159,6 +161,22 @@ stub_seccomp_restore_state(struct stub_data_arch *arch)
 		stub_syscall2(__NR_arch_prctl, ARCH_SET_GS, arch->gs_base);
 
 	arch->sync = 0;
+}
+
+/*
+ * x86 returns from the signal handler through the SA_RESTORER
+ * trampoline (stub_signal_restorer, in the stub page), so the
+ * rt_sigreturn svc is on the stub page and passes the seccomp
+ * filter's IP check. Nothing to do here.
+ */
+static __always_inline void stub_signal_return(void *frame)
+{
+}
+
+/* x86 forbids direct fs/gs base writes (arch_prctl only), so the
+ * kernel already knows the TLS base; nothing for the stub to save. */
+static __always_inline void stub_seccomp_save_state(struct stub_data_arch *arch)
+{
 }
 
 #endif
