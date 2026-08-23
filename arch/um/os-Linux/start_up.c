@@ -32,6 +32,7 @@
 #include <linux/filter.h>
 #include <sysdep/mcontext.h>
 #include <sysdep/stub.h>
+#include <stub-futex.h>
 #include <registers.h>
 #include <skas.h>
 #include "internal.h"
@@ -706,6 +707,56 @@ static bool __init init_seccomp(void)
 	return false;
 }
 
+/*
+ * Is the cycle counter the stub's bounded spin is budgeted against readable,
+ * and does it advertise a usable rate?
+ *
+ * On arm64 that is CNTVCT_EL0/CNTFRQ_EL0, and userspace may only read them
+ * when CNTKCTL_EL1.EL0VCTEN is set. Linux sets it because its own vDSO needs
+ * it -- but that is a statement about Linux, not about the host actually
+ * underneath us, which may be an emulator or a hypervisor that traps the
+ * register. Getting it wrong costs a SIGILL raised inside the stub, where
+ * nothing is listening and the boot dies with no message naming the
+ * instruction. (x86 has the equivalent hazard in prctl(PR_SET_TSC).)
+ *
+ * A child pays for the answer, so an illegal read costs one process rather
+ * than the boot. A host without a usable counter simply does not spin. The
+ * rate is probed in the child but cached from the parent's own call: only a
+ * read the child survived is repeated here.
+ */
+static void __init check_stub_cycles(void)
+{
+	int pid, n, status;
+
+	os_info("Checking the stub's cycle counter...");
+
+	pid = fork();
+	if (pid == 0) {
+		/* Both are read on the hot path; probe both. */
+		if (!stub_cycles_per_us())
+			_exit(1);
+		stub_cycles();
+		_exit(0);
+	}
+	if (pid < 0)
+		fatal_perror("check_stub_cycles: fork failed");
+
+	CATCH_EINTR(n = waitpid(pid, &status, 0));
+	if (n < 0)
+		fatal_perror("check_stub_cycles: wait failed");
+
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		stub_cycles_rate = stub_cycles_per_us();
+		os_info("OK (%lu ticks/us)\n", stub_cycles_rate);
+		return;
+	}
+
+	if (WIFSIGNALED(status))
+		os_info("unreadable (signal %d); stub spin disabled\n",
+			WTERMSIG(status));
+	else
+		os_info("no usable rate; stub spin disabled\n");
+}
 
 static void __init check_coredump_limit(void)
 {
@@ -877,6 +928,13 @@ void __init os_early_checks(void)
 		      "host with %dK or smaller pages.\n",
 		      host_page_size, UM_KERN_PAGE_SIZE,
 		      host_page_size / 1024, UM_KERN_PAGE_SIZE / 1024);
+
+	/*
+	 * Before either mode is chosen: the spin this gates belongs to
+	 * SECCOMP mode, and that path returns below without reaching
+	 * check_ptrace().
+	 */
+	check_stub_cycles();
 
 	if (seccomp_config) {
 		if (init_seccomp()) {

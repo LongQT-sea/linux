@@ -113,6 +113,7 @@ stub_signal_interrupt(int sig, siginfo_t *info, void *p)
 	int *fd_map;
 	int num_fds;
 	unsigned int futex_val;
+	unsigned long budget;
 	long res;
 
 	d->signal = sig;
@@ -139,11 +140,22 @@ restart_wait:
 		} while (res == -EINTR);
 	}
 
-	futex_val = stub_futex_load_acquire(&d->futex);
+	/*
+	 * Wait for the kernel's reply: spin within the budget first, so a fast
+	 * reply is observed without ever entering FUTEX_WAIT. A zero budget
+	 * (hook-less backend, seccomp_spin=0, or adaptive backoff) reduces to
+	 * a single acquire load.
+	 */
+	budget = stub_futex_spin_budget(&d->stub_spin, d->spin_ticks);
+	futex_val = stub_futex_spin(&d->futex, FUTEX_IN_KERN, budget);
+	if (budget)
+		stub_futex_spin_result(&d->stub_spin,
+				       STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_CHILD);
+
 	if (STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_KERN) {
 		/*
 		 * Going to sleep: advertise it, so the kernel's handoff knows
-		 * a wake is needed. If the reply slipped in between the load
+		 * a wake is needed. If the reply slipped in between the spin
 		 * and this fetch_or, the returned old value shows the flip
 		 * and the wait is skipped entirely.
 		 */

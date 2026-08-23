@@ -9,6 +9,7 @@
 #include <sysdep/ptrace.h>
 
 extern int using_seccomp;
+extern unsigned long stub_cycles_rate;
 
 /*
  * Backend-interpreted bits copied into every stub_init_data's
