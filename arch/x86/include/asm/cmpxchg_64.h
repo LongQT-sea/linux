@@ -90,6 +90,20 @@ static __always_inline bool arch_try_cmpxchg128_local(volatile u128 *ptr, u128 *
 }
 #define arch_try_cmpxchg128_local arch_try_cmpxchg128_local
 
+#ifdef CONFIG_UML
+/*
+ * UML selects HAVE_ALIGNED_STRUCT_PAGE/HAVE_CMPXCHG_DOUBLE, which compiles
+ * SLUB's freelist-ABA path in generic TUs (mm/slub.c et al). Those TUs have
+ * no boot_cpu_has(): that lives in arch/um/include/asm/cpufeature.h, which
+ * they never include. Resolve against um's boot_cpu_data directly; the host
+ * CPU really does execute cmpxchg16b.
+ */
+#include <asm/processor.h>
+#include <linux/bitops.h>
+#define system_has_cmpxchg128()	\
+	test_bit(X86_FEATURE_CX16, (unsigned long *)(boot_cpu_data.x86_capability))
+#else
 #define system_has_cmpxchg128()		boot_cpu_has(X86_FEATURE_CX16)
+#endif
 
 #endif /* _ASM_X86_CMPXCHG_64_H */
