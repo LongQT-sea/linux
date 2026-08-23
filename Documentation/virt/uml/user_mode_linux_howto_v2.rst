@@ -182,6 +182,35 @@ To specify the full module installation path, use::
 
 At this point the image is ready to be brought up.
 
+**********************
+Non-x86 host machines
+**********************
+
+UML was historically x86-only. The kernel can now also be built to
+run on arm64 hosts::
+
+   $ make ARCH=um SUBARCH=arm64
+
+(add ``CROSS_COMPILE=aarch64-linux-gnu-`` when building on another
+architecture). The resulting ``linux`` binary runs on an arm64 host
+exactly like the x86 one does on x86.
+
+Points specific to non-x86 hosts:
+
+* The guest page size must not be smaller than the host's. On hosts
+  running a 16K-page arm64 kernel (for example Apple silicon
+  machines), build the guest with ``CONFIG_PAGE_SIZE_16KB=y``; UML
+  refuses to boot when the sizes cannot work together and prints
+  both.
+
+* On arm64 the userspace runs in seccomp mode by default (the
+  ptrace/SYSEMU mode is not available there), so the host kernel
+  must support seccomp filters with user notification, which any
+  distribution kernel does.
+
+* The root filesystem must of course contain binaries for the host's
+  architecture: an arm64 UML kernel boots an arm64 userspace.
+
 *************************
 Setting Up UML Networking
 *************************
