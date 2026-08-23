@@ -103,7 +103,7 @@ archheaders:
 	$(Q)$(MAKE) -f $(srctree)/Makefile ARCH=$(HEADER_ARCH) asm-generic archheaders
 
 archprepare:
-	$(Q)$(MAKE) $(build)=$(HOST_DIR)/um include/generated/user_constants.h
+	$(Q)$(MAKE) $(build)=$(HOST_DIR)/um include/generated/user_constants.h $(ARCHPREPARE_BACKEND)
 
 LINK-$(CONFIG_LD_SCRIPT_STATIC) += -static
 LINK-$(CONFIG_LD_SCRIPT_DYN) += -no-pie

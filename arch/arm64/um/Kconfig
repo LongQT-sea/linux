@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menu "Host processor type and features (arm64)"
+endmenu
+
+config UML_ARM64
+	def_bool y
+	select CLONE_BACKWARDS
+
+config GENERIC_HWEIGHT
+	def_bool y
+
+config 64BIT
+	def_bool y
