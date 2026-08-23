@@ -22,10 +22,8 @@
 #include <linux/smp-internal.h>
 
 #include <asm/processor.h>
-#include <asm/cpufeature.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
-#include <asm/text-patching.h>
 #include <as-layout.h>
 #include <arch.h>
 #include <init.h>
@@ -59,7 +57,7 @@ static void __init add_arg(char *arg)
 struct cpuinfo_um boot_cpu_data = {
 	.loops_per_jiffy	= 0,
 	.cache_alignment	= L1_CACHE_BYTES,
-	.x86_capability		= { 0 }
+	CPUINFO_UM_ARCH_INIT
 };
 
 EXPORT_SYMBOL(boot_cpu_data);
@@ -83,12 +81,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	seq_printf(m, "model name\t: UML\n");
 	seq_printf(m, "mode\t\t: skas\n");
 	seq_printf(m, "host\t\t: %s\n", host_info);
-	seq_printf(m, "fpu\t\t: %s\n", str_yes_no(cpu_has(&boot_cpu_data, X86_FEATURE_FPU)));
-	seq_printf(m, "flags\t\t:");
-	for (i = 0; i < 32*NCAPINTS; i++)
-		if (cpu_has(&boot_cpu_data, i) && (x86_cap_flags[i] != NULL))
-			seq_printf(m, " %s", x86_cap_flags[i]);
-	seq_printf(m, "\n");
+	arch_cpuinfo_show_extra(m);
 	seq_printf(m, "cache_alignment\t: %d\n", boot_cpu_data.cache_alignment);
 	seq_printf(m, "bogomips\t: %lu.%02lu\n",
 		   loops_per_jiffy/(500000/HZ),
@@ -264,15 +257,6 @@ unsigned long brk_start;
 
 #define MIN_VMALLOC (32 * 1024 * 1024)
 
-static void __init parse_host_cpu_flags(char *line)
-{
-	int i;
-	for (i = 0; i < 32*NCAPINTS; i++) {
-		if ((x86_cap_flags[i] != NULL) && strstr(line, x86_cap_flags[i]))
-			set_cpu_cap(&boot_cpu_data, i);
-	}
-}
-
 static void __init parse_cache_line(char *line)
 {
 	long res;
@@ -345,7 +329,7 @@ int __init linux_main(int argc, char **argv, char **envp)
 	/* OS sanity checks that need to happen before the kernel runs */
 	os_early_checks();
 
-	get_host_cpu_features(parse_host_cpu_flags, parse_cache_line);
+	get_host_cpu_features(arch_parse_cpu_flags, parse_cache_line);
 
 	brk_start = (unsigned long) sbrk(0);
 
@@ -428,48 +412,6 @@ void __init arch_cpu_finalize_init(void)
 {
 	arch_check_bugs();
 	os_check_bugs();
-}
-
-void apply_seal_endbr(s32 *start, s32 *end)
-{
-}
-
-void apply_retpolines(s32 *start, s32 *end)
-{
-}
-
-void apply_returns(s32 *start, s32 *end)
-{
-}
-
-void apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
-		   s32 *start_cfi, s32 *end_cfi)
-{
-}
-
-void apply_alternatives(struct alt_instr *start, struct alt_instr *end)
-{
-}
-
-void *text_poke(void *addr, const void *opcode, size_t len)
-{
-	/*
-	 * In UML, the only reference to this function is in
-	 * apply_relocate_add(), which shouldn't ever actually call this
-	 * because UML doesn't have live patching.
-	 */
-	WARN_ON(1);
-
-	return memcpy(addr, opcode, len);
-}
-
-void *text_poke_copy(void *addr, const void *opcode, size_t len)
-{
-	return text_poke(addr, opcode, len);
-}
-
-void smp_text_poke_sync_each_cpu(void)
-{
 }
 
 void uml_pm_wake(void)

@@ -78,6 +78,9 @@ struct cpuinfo_um {
 	};
 };
 
+/* Initializer for the backend-owned capability member of cpuinfo_um */
+#define CPUINFO_UM_ARCH_INIT	.x86_capability = { 0 }
+
 extern struct cpuinfo_um boot_cpu_data;
 
 #define cache_line_size()	(boot_cpu_data.cache_alignment)
