@@ -186,6 +186,7 @@ void *os_mremap_rw_shared(void *old_addr, size_t old_size, size_t new_size);
 extern void os_early_checks(void);
 extern void os_check_bugs(void);
 extern void check_host_supports_tls(int *supports_tls, int *tls_min);
+extern const char *os_machinename_fixup(const char *host_machine);
 extern void get_host_cpu_features(
 	void (*flags_helper_func)(char *line),
 	void (*cache_helper_func)(char *line));

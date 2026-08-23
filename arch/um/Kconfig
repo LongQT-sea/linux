@@ -88,6 +88,12 @@ config HZ
 config UML_SUBARCH_SUPPORTS_SMP
 	bool
 
+# Selected by backends that provide their own memcpy (native lib reuse
+# or generic lib/string.c with no __HAVE_ARCH_MEMCPY); gates the
+# user_syms.c duplicate exports.
+config UML_SUBARCH_MEMCPY
+	bool
+
 config SMP
 	bool "Symmetric multi-processing support"
 	default n
