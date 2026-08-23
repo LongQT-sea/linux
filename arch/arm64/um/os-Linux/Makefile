@@ -2,7 +2,7 @@
 #
 # arm64 backend host-side (os-Linux) objects for UML.
 
-obj-y = registers.o mcontext.o machinename.o
+obj-y = registers.o mcontext.o machinename.o pac.o
 
 USER_OBJS := $(obj-y)
 
