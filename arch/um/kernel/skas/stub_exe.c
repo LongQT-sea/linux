@@ -8,9 +8,7 @@
 #include <linux/seccomp.h>
 #include <generated/asm-offsets.h>
 
-void _start(void);
-
-noinline static void real_init(void)
+static noinline void __attribute__((used)) real_init(void)
 {
 	struct stub_init_data init_data;
 	unsigned long res;
@@ -209,17 +207,27 @@ noinline static void real_init(void)
 	__builtin_unreachable();
 }
 
-__attribute__((naked)) void _start(void)
-{
-	/*
-	 * Since the stack after exec() starts at the top-most address,
-	 * but that's exactly where we also want to map the stub data
-	 * and code, this must:
-	 *  - push the stack by 1 code and STUB_DATA_PAGES data pages
-	 *  - call real_init()
-	 * This way, real_init() can use the stack normally, while the
-	 * original stack further down (higher address) will become
-	 * inaccessible after the mmap() calls above.
-	 */
-	stub_start(real_init);
-}
+/*
+ * Since the stack after exec() starts at the top-most address, but
+ * that is exactly where the stub code and data must be mapped, the
+ * entry point must:
+ *  - push the stack down by 1 code and STUB_DATA_PAGES data pages
+ *  - call real_init()
+ * This way real_init() can use the stack normally, while the original
+ * stack further up (at higher addresses) becomes inaccessible after
+ * the mmap() calls it makes.
+ *
+ * A naked C function is not a reliable container for these
+ * instructions: only some GCC targets honor the attribute (aarch64
+ * GCC warns and ignores it), and an ignored attribute means a
+ * compiler-emitted prologue touches the stack before it is moved.
+ * Each backend provides the entry as real assembly (STUB_EXE_START
+ * in sysdep/stub.h).
+ */
+__asm__(
+	".pushsection .text\n"
+	".global _start\n"
+	"_start:\n"
+	STUB_EXE_START
+	".popsection\n"
+);

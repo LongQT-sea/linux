@@ -10,6 +10,7 @@
 #include <sysdep/ptrace_user.h>
 #include <generated/asm-offsets.h>
 #include <linux/stddef.h>
+#include <linux/stringify.h>
 #include <asm/prctl.h>
 
 #define STUB_MMAP_NR __NR_mmap
@@ -136,13 +137,14 @@ static __always_inline void *get_stub_data(void)
 	return (void *)ret;
 }
 
-#define stub_start(fn)							\
-	asm volatile (							\
-		"subq %0,%%rsp ;"					\
-		"movq %1,%%rax ;"					\
-		"call *%%rax ;"						\
-		:: "i" (STUB_SIZE),					\
-		   "i" (&fn))
+/*
+ * Entry instructions of the stub_exe binary, emitted from file-scope
+ * asm in stub_exe.c: move the stack pointer down past the future stub
+ * mappings, then call real_init().
+ */
+#define STUB_EXE_START							\
+	"	subq	$" __stringify(STUB_SIZE) ", %rsp\n"		\
+	"	call	real_init\n"
 
 static __always_inline void
 stub_seccomp_restore_state(struct stub_data_arch *arch)
