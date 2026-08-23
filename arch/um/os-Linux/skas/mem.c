@@ -102,7 +102,7 @@ static inline long do_syscall_stub(struct mm_id *mm_idp)
 			printk(UM_KERN_ERR "Registers -\n");
 			for (i = 0; i < MAX_REG_NR; i++)
 				printk(UM_KERN_ERR "\t%d\t0x%lx\n", i, syscall_regs[i]);
-			panic("%s : PTRACE_SETREGS failed, errno = %d\n",
+			panic("%s : ptrace_setregs failed, errno = %d\n",
 			      __func__, -n);
 		}
 

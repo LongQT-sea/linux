@@ -11,5 +11,6 @@
 
 extern int ptrace_getregs(long pid, unsigned long *regs_out);
 extern int ptrace_setregs(long pid, unsigned long *regs_in);
+extern const char *ptrace_reg_name(int idx);
 
 #endif
