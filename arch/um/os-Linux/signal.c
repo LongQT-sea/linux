@@ -43,6 +43,26 @@ static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
 		/* For segfaults, we want the data from the sigcontext. */
 		get_regs_from_mc(&r, mc);
 		GET_FAULTINFO_FROM_MC(r.faultinfo, mc);
+#ifdef CONFIG_UML_S390
+		/*
+		 * The s390 signal frame carries no TEID, so
+		 * GET_FAULTINFO_FROM_MC zeroes the faultinfo.
+		 * Classify write-ness from si_code exactly like the
+		 * stub-relay fill in os-Linux/skas/process.c: ACCERR
+		 * = store to a protected page (native s390 treats
+		 * protection as a write), MAPERR = unmapped. Without
+		 * this every kernel-mode COW write fault (copy_to_user
+		 * after a fork burst, stub_data updates in the freshly
+		 * cloned child) is taken as a read, maps the page
+		 * read-only, and the retried store faults forever.
+		 */
+		siginfo_t *hsi = (siginfo_t *)si;
+
+		r.faultinfo.addr = (unsigned long)hsi->si_addr;
+		r.faultinfo.error_code =
+			(hsi->si_code == SEGV_ACCERR) ? 0x04 : 0x11;
+		r.faultinfo.trap_no = r.faultinfo.error_code;
+#endif
 	}
 
 	/* enable signals if sig isn't IRQ signal */
