@@ -38,11 +38,29 @@ static noinline void __attribute__((used)) real_init(void)
 	/* Needed in SECCOMP mode (and safe to do anyway) */
 	stub_syscall5(__NR_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 
-	/* read information from STDIN and close it */
-	res = stub_syscall3(__NR_read, 0,
-			    (unsigned long)&init_data, sizeof(init_data));
-	if (res != sizeof(init_data))
-		stub_syscall1(__NR_exit, 10);
+	/* Read init_data from STDIN. SOCK_STREAM may deliver short reads
+	 * (observed: 18-byte first segment), so loop until the full
+	 * struct arrived or the writer closed. */
+	{
+		char *buf = (char *)&init_data;
+		size_t got = 0;
+
+		while (got < sizeof(init_data)) {
+			res = stub_syscall3(__NR_read, 0,
+					    (unsigned long)(buf + got),
+					    sizeof(init_data) - got);
+			if ((long)res <= 0)
+				break;
+			got += res;
+		}
+		if (got != sizeof(init_data)) {
+			/* Encode read errno/short-read in the exit code
+			 * for post-mortem via the stub-death path. */
+			int code = 100 + (int)(((res < 0 ? -res : res) |
+						got) & 0x3f);
+			stub_syscall1(__NR_exit, code);
+		}
+	}
 
 	/* In SECCOMP mode, FD 0 is a socket and is later used for FD passing */
 	if (!init_data.seccomp)
@@ -136,60 +154,69 @@ static noinline void __attribute__((used)) real_init(void)
 	 */
 	if (init_data.seccomp) {
 		struct sock_filter filter[] = {
-#if __BITS_PER_LONG > 32
-			/* [0] Load upper 32bit of instruction pointer from seccomp_data */
+			/*
+			 * Accept only syscalls whose instruction pointer
+			 * lies inside the whole stub region [stub_start,
+			 * stub_start + STUB_SIZE): the CODE page (guest
+			 * syscall replay) AND the DATA page(s) — the
+			 * handler runs on the sigaltstack there and
+			 * issues futex/recvmsg itself. Anything outside:
+			 * guest syscall → TRAP. Wrong arch → KILL.
+			 */
 			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+				/* s390x is BIG-endian: bytes [0..3] of the
+				 * 8-byte ip are the HIGH half */
+				 offsetof(struct seccomp_data, instruction_pointer)),
+			/* upper32 != stub_start>>32 → guest syscall (TRAP) */
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+				 (init_data.stub_start) >> 32, 0, 6),
+
+			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+				/* BE: bytes [4..7] are the LOW half */
 				 (offsetof(struct seccomp_data, instruction_pointer) + 4)),
+			/* ip < start → TRAP ; ip >= end → TRAP */
+			BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K,
+				 (init_data.stub_start) & 0xffffffff, 0, 4),
+			BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K,
+				 ((init_data.stub_start + STUB_SIZE) & 0xffffffff), 3, 0),
 
-			/* [1] Jump forward 3 instructions if the upper address is not identical */
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (init_data.stub_start) >> 32, 0, 3),
-#endif
-			/* [2] Load lower 32bit of instruction pointer from seccomp_data */
-			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
-				 (offsetof(struct seccomp_data, instruction_pointer))),
 
-			/* [3] Mask out lower bits */
-			BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xfffff000),
-
-			/* [4] Jump to [6] if the lower bits are not on the expected page */
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (init_data.stub_start) & 0xfffff000, 1, 0),
-
-			/* [5] Trap call, allow */
-			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
-
-			/* [6,7] Check architecture */
+			/* Inside the stub window: verify architecture */
 			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 				 offsetof(struct seccomp_data, arch)),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
-				 UM_SECCOMP_ARCH_NATIVE, 1, 0),
-
-			/* [8] Kill (for architecture check) */
+				 UM_SECCOMP_ARCH_NATIVE, 2, 0),
 			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 
-			/* [9] Load syscall number */
+			/* Guest syscall: relay via SIGSYS */
+			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+
+			/* Load syscall number */
 			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 				 offsetof(struct seccomp_data, nr)),
+			/*
+			 * Permitted syscalls (issued by the handler
+			 * inside the stub window). Each match jumps to
+			 * the final RET ALLOW; the implicit
+			 * fall-through of a non-match MUST hit the
+			 * RET TRAP below — without it every jump
+			 * target is out of range (EINVAL at install)
+			 * and unmatched in-window syscalls would be
+			 * silently allowed.
+			 */
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_futex, 7, 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_recvmsg, 6, 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_close, 5, 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_MMAP_NR, 4, 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_munmap, 3, 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 173 /* rt_sigreturn */, 2, 0),
+#ifdef CONFIG_UML_S390
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace /* TRACEME before first relay */, 1, 0),
+#endif
+			/* Non-allowlisted syscall from inside the
+			 * stub window: trap it like a guest syscall. */
+			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
 
-			/* [10-16] Check against permitted syscalls */
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_futex,
-				 7, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,__NR_recvmsg,
-				 6, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,__NR_close,
-				 5, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_MMAP_NR,
-				 4, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_munmap,
-				 3, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_TLS_SYSCALL_NR,
-				 2, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_rt_sigreturn,
-				 1, 0),
-
-			/* [17] Not one of the permitted syscalls */
-			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
-
-			/* [18] Permitted call for the stub */
 			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 		};
 		struct sock_fprog prog = {
@@ -197,18 +224,41 @@ static noinline void __attribute__((used)) real_init(void)
 			.filter = filter,
 		};
 
+#ifdef CONFIG_UML_S390
+	/*
+	 * Become traced by the parent BEFORE the filter goes live: any
+	 * syscall issued after the filter (including this one, from the
+	 * stub_exe mapping outside the stub IP window) traps and is
+	 * RELAYED to UML, which would execute ptrace(TRACEME) on
+	 * ITSELF and hand us a meaningless 0 (box-proven: TracerPid
+	 * stayed 0 while the relay worked). Pre-filter, the svc runs
+	 * for real and the tracer sees every SIGSYS delivery-stop.
+	 */
+	{
+		long tr = stub_syscall4(__NR_ptrace,
+					0 /* PTRACE_TRACEME */,
+					0, 0, 0);
+		if (tr != 0)
+			stub_syscall2(__NR_exit_group, 90 + tr, 0);
+	}
+#endif
+
 		if (stub_syscall3(__NR_seccomp, SECCOMP_SET_MODE_FILTER,
 				  SECCOMP_FILTER_FLAG_TSYNC,
 				  (unsigned long)&prog) != 0)
 			stub_syscall1(__NR_exit, 21);
 
-		/* Fall through, the exit syscall will cause SIGSYS */
+		/* Fall through: the exit syscall hits the filter and
+		 * raises SIGSYS, entering stub_signal_interrupt — the
+		 * first relay round. */
 	} else {
 		stub_syscall4(__NR_ptrace, PTRACE_TRACEME, 0, 0, 0);
 
 		stub_syscall2(__NR_kill, stub_syscall0(__NR_getpid), SIGSTOP);
 	}
 
+	/* In seccomp mode NOTREACHED (the filtered exit above raised
+	 * SIGSYS); ptrace mode stops here after its SIGSTOP. */
 	stub_syscall1(__NR_exit, 30);
 
 	__builtin_unreachable();

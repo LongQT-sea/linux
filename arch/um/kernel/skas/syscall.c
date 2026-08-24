@@ -75,7 +75,6 @@ void handle_syscall(struct uml_pt_regs *r)
 						 UPT_SYSCALL_ARG4(&regs->regs),
 						 UPT_SYSCALL_ARG5(&regs->regs),
 						 UPT_SYSCALL_ARG6(&regs->regs));
-
 		PT_REGS_SET_SYSCALL_RETURN(regs, ret);
 
 		/*

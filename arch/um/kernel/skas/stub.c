@@ -119,10 +119,6 @@ stub_signal_interrupt(int sig, siginfo_t *info, void *p)
 	d->signal = sig;
 	d->si_offset = (unsigned long)info - (unsigned long)&d->sigstack[0];
 	d->mctx_offset = (unsigned long)&uc->uc_mcontext - (unsigned long)&d->sigstack[0];
-
-	/* Save arch state the kernel cannot observe (arm64: TPIDR_EL0) */
-	stub_seccomp_save_state(&d->arch_data);
-
 restart_wait:
 	/*
 	 * Hand the word to the kernel. The exchange's release ordering
@@ -188,7 +184,7 @@ restart_wait:
 
 		/* We should never have a receive error (other than -EAGAIN) */
 		if (res < 0 && res != -EAGAIN)
-			stub_syscall1(__NR_exit_group, 1);
+			stub_syscall1(__NR_exit_group, 2);
 
 		/* Receive the FDs */
 		num_fds = 0;
@@ -214,6 +210,7 @@ restart_wait:
 		goto restart_wait;
 	}
 
+
 	/* Restore arch dependent state that is not part of the mcontext */
 	stub_seccomp_restore_state(&d->arch_data);
 
@@ -224,6 +221,10 @@ restart_wait:
 void __section(".__syscall_stub")
 stub_signal_restorer(void)
 {
-	/* We must not have anything on the stack when doing rt_sigreturn */
-	stub_syscall0(__NR_rt_sigreturn);
+	/* We must not have anything on the stack when doing rt_sigreturn.
+	 * NOTE: __NR_rt_sigreturn here resolves through <asm/unistd.h> to
+	 * the HOST (x86_64) table (15) because stub objects get no target
+	 * uapi include path; s390x needs 173. Same class of bug as the
+	 * execveat nr in userspace_tramp. */
+	stub_syscall0(173); /* s390x __NR_rt_sigreturn */
 }

@@ -99,7 +99,8 @@ static inline long do_syscall_stub(struct mm_id *mm_idp)
 
 	if (using_seccomp) {
 		proc_data->restart_wait = 1;
-		wait_stub_done_seccomp(mm_idp, 0, 1);
+		if (wait_stub_done_seccomp(mm_idp, 0, 1) < 0)
+			return -1;
 	} else {
 		n = ptrace_setregs(pid, syscall_regs);
 		if (n < 0) {

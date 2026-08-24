@@ -316,8 +316,15 @@ int __init linux_main(int argc, char **argv, char **envp)
 		add_arg(DEFAULT_COMMAND_LINE_CONSOLE);
 
 	host_task_size = get_top_address(envp);
-	/* reserve a few pages for the stubs */
-	stub_start = host_task_size - STUB_SIZE;
+	/*
+	 * Reserve the stubs plus a safety gap below the host stack: the
+	 * stub process execs fresh and its NEW stack grows down from the
+	 * same top region — without a gap larger than any randomized
+	 * stack placement, the child's stack overlaps the MAP_FIXED stub
+	 * pages and seccomp-trapped signals die (box-proven on s390x,
+	 * where ASLR placed both identically). 16MB is ample.
+	 */
+	stub_start = host_task_size - STUB_SIZE - (16 << 20);
 	host_task_size = stub_start;
 
 	/* Limit TASK_SIZE to what is addressable by the page table */

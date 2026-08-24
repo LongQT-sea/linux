@@ -811,14 +811,20 @@ void  __init get_host_cpu_features(
 		fclose(cpuinfo);
 	}
 }
-
 /*
  * arm64 UML supports the seccomp userspace only: its SYSEMU fallback
  * never creates runnable children, so default to "on" there (a boot
  * that cannot probe seccomp fails loudly instead of limping into the
  * broken mode). x86 keeps the upstream default (off).
+ *
+ * s390x joins arm64: its generic-entry kernel reports SYSEMU stops at
+ * syscall entry AND exit and does not skip execution x86-style
+ * (probe-proven on 6.8.0-124, F-s6), so check_sysemu's contract is
+ * unsatisfiable. PTRACE mode remains reachable via seccomp=off for
+ * experiments, but it is not a supported s390x boot mode.
  */
-static int seccomp_config __initdata = IS_ENABLED(CONFIG_UML_ARM64) ? 2 : 0;
+static int seccomp_config __initdata =
+	(IS_ENABLED(CONFIG_UML_ARM64) || IS_ENABLED(CONFIG_UML_S390)) ? 2 : 0;
 
 static int __init uml_seccomp_config(char *line, int *add)
 {

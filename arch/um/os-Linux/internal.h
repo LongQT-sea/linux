@@ -25,7 +25,11 @@ int timer_alarm_pending(void);
  * skas/process.c
  */
 void wait_stub_done(int pid);
-void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys);
+int wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys);
+#ifdef CONFIG_UML_S390
+int s390_mediate_stops(struct mm_id *mm_idp);
+void s390_stub_tracer_detach(struct mm_id *mm_idp);
+#endif
 
 /*
  * smp.c

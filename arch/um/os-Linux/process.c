@@ -70,9 +70,24 @@ void os_kill_ptraced_process(int pid, int reap_child)
 pid_t os_reap_child(void)
 {
 	int status;
+	pid_t pid;
+
+#ifdef CONFIG_UML_S390
+	/*
+	 * s390x hybrid relay: stub processes are TRACED (TRACEME from
+	 * real_init). Ptrace stops are visible only to the tracer, but
+	 * this generic reaper runs in the same single-threaded process
+	 * and its waitpid(-1) would consume the tracer's SIGTRAP stops
+	 * and even final exits, breaking both the relay and the
+	 * lost-child detection. Leave traced children to their tracer;
+	 * only reap untraced ones (none today).
+	 */
+	return 0;
+#endif
 
 	/* Try to reap a child */
-	return waitpid(-1, &status, WNOHANG);
+	pid = waitpid(-1, &status, WNOHANG);
+	return pid;
 }
 
 /* Don't use the glibc version, which caches the result in TLS. It misses some

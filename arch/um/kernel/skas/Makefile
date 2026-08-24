@@ -57,6 +57,16 @@ CFLAGS_stub_exe.o += -fomit-frame-pointer
 # (CFLAGS_REMOVE does not reach UNPROFILE_OBJS: their c_flags are
 # rebuilt from USER_CFLAGS in arch/um/scripts/Makefile.rules.)
 USER_CFLAGS := $(filter-out -mgeneral-regs-only,$(USER_CFLAGS))
+#
+# The stub TUs compile WITHOUT kernel config headers (no autoconf),
+# so CONFIG_UML_S390 never reaches them through normal means; pass
+# it explicitly. On cross builds the target's multiarch libc headers
+# must also win over the build seat's own /usr/include, else every
+# syscall number resolves to the x86_64 table.
+ifeq ($(CONFIG_UML_S390),y)
+CFLAGS_stub.o += -DCONFIG_UML_S390 $(USER_CFLAGS_S390_ISYSTEM)
+CFLAGS_stub_exe.o += -DCONFIG_UML_S390 $(USER_CFLAGS_S390_ISYSTEM)
+endif
 
 # Clang's stack var initialisation can use memset() or similar and that
 # cannot be done for this code since we embed/move the stub

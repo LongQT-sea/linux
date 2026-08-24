@@ -17,6 +17,7 @@ struct faultinfo {
 
 /* ESR_EL1 WnR (write-not-read) is bit 6 */
 #define FAULT_WRITE(fi) ((fi).error_code & (1 << 6))
+#define HAVE_RELIABLE_FAULT_WRITE 1
 #define FAULT_ADDRESS(fi) ((fi).addr)
 
 /*

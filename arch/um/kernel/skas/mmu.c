@@ -11,12 +11,13 @@
 #include <shared/irq_kern.h>
 #include <asm/pgalloc.h>
 #include <asm/sections.h>
+#include <os.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 #include <as-layout.h>
-#include <os.h>
 #include <skas.h>
 #include <stub-data.h>
+#include "../../../os-Linux/internal.h"
 
 /* Ensure the stub_data struct covers the allocated area */
 static_assert(sizeof(struct stub_data) == STUB_DATA_PAGES * UM_KERN_PAGE_SIZE);
@@ -89,6 +90,11 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 	new_id->stack = stack;
 	new_id->syscall_data_len = 0;
 	new_id->syscall_fd_num = 0;
+#ifdef CONFIG_UML_S390
+	/* s390x hybrid relay: tracer attaches in start_userspace() */
+	new_id->traced = 0;
+	new_id->relay_arg1 = 0;
+#endif
 
 	scoped_guard(spinlock_irqsave, &mm_list_lock) {
 		/* Insert into list, used for lookups when the child dies */
@@ -203,6 +209,9 @@ void destroy_context(struct mm_struct *mm)
 	}
 
 	if (mmu->id.pid > 0) {
+#ifdef CONFIG_UML_S390
+		s390_stub_tracer_detach(&mmu->id);
+#endif
 		os_kill_ptraced_process(mmu->id.pid, 1);
 		mmu->id.pid = -1;
 	}
@@ -238,10 +247,17 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 		list_for_each_entry(mm_context, &mm_list, list) {
 			if (mm_context->id.pid == pid) {
 				struct stub_data *stub_data;
-				printk("Unexpectedly lost MM child! Affected tasks will segfault.");
+				stub_data = (void *)mm_context->id.stack;
+				printk("Unexpectedly lost MM child! pid=%d err=%ld sig=%d len=%d",
+				       (int)pid, stub_data->err,
+				       stub_data->signal,
+				       stub_data->syscall_data_len);
 
 				/* Marks the MM as dead */
 				WRITE_ONCE(mm_context->id.pid, -1);
+#ifdef CONFIG_UML_S390
+				mm_context->id.traced = false;
+#endif
 
 				stub_data = (void *)mm_context->id.stack;
 				/*

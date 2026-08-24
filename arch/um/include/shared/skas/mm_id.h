@@ -7,6 +7,7 @@
 #define __MM_ID_H
 
 #include <linux/compiler_types.h>
+#include <linux/types.h>
 
 #define STUB_MAX_FDS 4
 
@@ -19,6 +20,19 @@ struct mm_id {
 	int sock;
 	int syscall_fd_num;
 	int syscall_fd_map[STUB_MAX_FDS];
+
+#ifdef CONFIG_UML_S390
+	/*
+	 * s390x hybrid relay: tracer state for the stub process. The
+	 * trap_myself() breakpoint only produces a tracer-visible
+	 * SIGTRAP when a tracer is attached; orig_gpr2 captured at
+	 * that stop is the true arg1 of a relayed guest syscall (the
+	 * SIGSYS mcontext carries r2 = -ENOSYS on s390,
+	 * arch/s390/kernel/syscall.c:134).
+	 */
+	int traced;
+	unsigned long relay_arg1;
+#endif
 };
 
 struct mutex *__get_turnstile(struct mm_id *mm_id);

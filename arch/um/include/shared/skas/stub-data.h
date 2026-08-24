@@ -150,6 +150,18 @@ struct stub_data {
 	int signal;
 	unsigned short si_offset;
 	unsigned short mctx_offset;
+	/*
+	 * s390x hybrid relay: a traced stub parks in the SIGSYS
+	 * signal-delivery-stop before its handler runs; the tracer
+	 * (UML, via TRACEME) captures orig_gpr2 there — the true arg1,
+	 * since the SIGSYS mcontext only carries r2 = -ENOSYS on s390
+	 * (arch/s390/kernel/syscall.c:134) — into relay_arg1 and sets
+	 * arg1_valid, then reinjects. get_stub_state() consumes and
+	 * clears arg1_valid. Zero-initialized fields are ignored on
+	 * x86 and arm64.
+	 */
+	int arg1_valid;
+	unsigned long relay_arg1;
 
 	/*
 	 * Spin budget in ticks of the timebase behind stub_cycles(), written

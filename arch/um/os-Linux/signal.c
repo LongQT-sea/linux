@@ -231,8 +231,16 @@ void set_handler(int sig)
 	if (sig == SIGSEGV)
 		flags |= SA_NODEFER;
 
-	if (sigismember(&action.sa_mask, sig))
-		flags |= SA_RESTART; /* if it's an irq signal */
+	/*
+	 * if it's an irq signal. SIGCHLD is excluded: with the s390
+	 * hybrid relay the tracer must observe the EINTR of its own
+	 * futex wait to drain pending ptrace stops (a traced stub
+	 * parks in signal-delivery-stop until then); restarting the
+	 * wait silently would delay every mediation round by the
+	 * full bounded-wait timeout.
+	 */
+	if (sigismember(&action.sa_mask, sig) && sig != SIGCHLD)
+		flags |= SA_RESTART;
 
 	action.sa_flags = flags;
 	action.sa_restorer = NULL;

@@ -22,6 +22,7 @@ struct faultinfo {
 };
 
 #define FAULT_WRITE(fi) ((fi).error_code & 2)
+#define HAVE_RELIABLE_FAULT_WRITE 1
 #define FAULT_ADDRESS(fi) ((fi).cr2)
 
 /* This is Page Fault */
