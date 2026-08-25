@@ -141,6 +141,28 @@ EXPORT_SYMBOL(system_state);
 #define MAX_INIT_ENVS CONFIG_INIT_ENV_ARG_LIMIT
 
 /* Default late time init is NULL. archs can override this later. */
+/*
+ * Count the built-in parameters with a plain loop. The obvious
+ * __stop___param - __start___param pointer difference compiles, on
+ * s390x at -Os with gcc 13, to a truncated reciprocal-multiply
+ * sequence ((span>>3) * 0xcccccccccccccccd, no correction step),
+ * yielding ~3.2M instead of 54; the param walk then runs off the
+ * table into the following ELF note and faults on garbage "name"
+ * pointers ("Segfault with no mm" during boot — reproducible when
+ * the host mmap layout left the faulting address unmapped). A count
+ * loop cannot be miscompiled.
+ */
+static unsigned int __init num_builtin_params(void)
+{
+	const struct kernel_param *p;
+	unsigned int n = 0;
+
+	for (p = __start___param; p < __stop___param; p++)
+		n++;
+	return n;
+}
+
+/* Default late time init is NULL. archs can override this later. */
 void (*__initdata late_time_init)(void);
 
 /* Untouched command line saved by arch-specific code. */
@@ -1025,7 +1047,7 @@ void start_kernel(void)
 	parse_early_param();
 	after_dashes = parse_args("Booting kernel",
 				  static_command_line, __start___param,
-				  __stop___param - __start___param,
+				  num_builtin_params(),
 				  -1, -1, NULL, &unknown_bootoption);
 	print_unknown_bootoptions();
 	if (!IS_ERR_OR_NULL(after_dashes))
@@ -1415,7 +1437,7 @@ static void __init do_initcall_level(int level, char *command_line)
 
 	parse_args(initcall_level_names[level],
 		   command_line, __start___param,
-		   __stop___param - __start___param,
+		   num_builtin_params(),
 		   level, level,
 		   NULL, ignore_unknown_bootoption);
 
