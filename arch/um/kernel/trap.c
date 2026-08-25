@@ -136,9 +136,10 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		       address, ip);
 	}
 
-	if (SEGV_IS_FIXABLE(&fi))
+	if (SEGV_IS_FIXABLE(&fi)) {
 		err = handle_page_fault(address, ip, is_write, is_user,
 					&si_code);
+	}
 	else {
 		err = -EFAULT;
 		/*

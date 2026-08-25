@@ -416,9 +416,30 @@ retry:
 	}
 
 	*code_out = SEGV_ACCERR;
-	if (is_write) {
-		if (!(vma->vm_flags & VM_WRITE))
+	if (is_write && !(vma->vm_flags & VM_WRITE)) {
+#ifdef CONFIG_UML_S390
+		/*
+		 * s390's FAULT_WRITE is a heuristic: the host reports
+		 * SEGV_ACCERR for store-to-protected, for execute and
+		 * for reads of protected pages alike, so a demand-
+		 * paged text page can arrive classified as a write
+		 * against its r-x mapping (observed as ~1-in-15 git
+		 * clone deaths with ip == fault address, i.e. an
+		 * instruction fetch). If the pte is not present,
+		 * retry as a read: a real fetch or read succeeds on
+		 * the guest retry, while a genuine store re-faults
+		 * on the now-present pte and takes the SIGSEGV with
+		 * correct semantics.
+		 */
+		pte_t *wptep = virt_to_pte(mm, address);
+
+		if (wptep && pte_present(*wptep))
 			goto out;
+		is_write = 0;
+#else
+		goto out;
+#endif
+	} else if (is_write) {
 		flags |= FAULT_FLAG_WRITE;
 	} else {
 		/* Don't require VM_READ|VM_EXEC for write faults! */
