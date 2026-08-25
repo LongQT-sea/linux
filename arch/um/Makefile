@@ -61,7 +61,9 @@ USER_CFLAGS = $(patsubst $(KERNEL_DEFINES),,$(patsubst -I%,,$(KBUILD_CFLAGS))) \
 		-idirafter $(objtree)/include -D__KERNEL__ -D__UM_HOST__ \
 		-include $(srctree)/include/linux/compiler-version.h \
 		-include $(srctree)/include/linux/kconfig.h \
-		-idirafter $(ARCH_DIR)/include/generated
+		-idirafter $(ARCH_DIR)/include/generated \
+		-idirafter $(objtree)/arch/$(SUBARCH)/include/generated/uapi \
+		$(ARCH_USER_CFLAGS)
 
 #This will adjust *FLAGS accordingly to the platform.
 include $(srctree)/$(ARCH_DIR)/Makefile-os-Linux
