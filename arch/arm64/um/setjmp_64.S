@@ -44,3 +44,14 @@ SYM_FUNC_START(kernel_longjmp)
 	mov	w0, w1
 	br	x2
 SYM_FUNC_END(kernel_longjmp)
+
+/*
+ * Contract wiring (arch/um/include/shared/longjmp.h): the arm64 ABI
+ * never keeps integer values in FP/vector registers, so both jump
+ * contracts are served by the same GPR-only implementation — the
+ * scheduler-jump width IS the relay-jump width here.
+ */
+SYM_FUNC_ALIAS(uml_relay_jump_save, kernel_setjmp)
+SYM_FUNC_ALIAS(uml_relay_jump_restore, kernel_longjmp)
+SYM_FUNC_ALIAS(uml_sched_jump_save, kernel_setjmp)
+SYM_FUNC_ALIAS(uml_sched_jump_restore, kernel_longjmp)

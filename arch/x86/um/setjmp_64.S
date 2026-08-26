@@ -53,3 +53,17 @@ kernel_longjmp:
 	jmp *56(%rdi)
 
 	.size kernel_longjmp,.-kernel_longjmp
+
+/*
+ * Contract wiring (arch/um/include/shared/longjmp.h): the x86-64
+ * ABI never keeps integer values in FP/vector registers, so both
+ * jump contracts are served by the same GPR-only implementation.
+ */
+	.globl uml_relay_jump_save
+	.set uml_relay_jump_save, kernel_setjmp
+	.globl uml_relay_jump_restore
+	.set uml_relay_jump_restore, kernel_longjmp
+	.globl uml_sched_jump_save
+	.set uml_sched_jump_save, kernel_setjmp
+	.globl uml_sched_jump_restore
+	.set uml_sched_jump_restore, kernel_longjmp
