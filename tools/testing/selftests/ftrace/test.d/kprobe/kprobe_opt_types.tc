@@ -16,6 +16,11 @@ ppc*)
   exit_unsupported
 esac
 
+if [ ! -f /proc/sys/debug/kprobes-optimization ]; then
+  echo "CONFIG_OPTPROBES is not set"
+  exit_unsupported
+fi
+
 DEFAULT=$(cat /proc/sys/debug/kprobes-optimization)
 echo 1 > /proc/sys/debug/kprobes-optimization
 for i in `seq 0 255`; do
