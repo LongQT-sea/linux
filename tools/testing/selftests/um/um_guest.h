@@ -84,7 +84,7 @@ static inline void um_res_skip(const char *name, const char *why)
  * /proc (several tests and the fault counter need it; the runner
  * pre-creates the mount point in the scratch root).
  */
-static void um_guest_setup(void)
+static inline void um_guest_setup(void)
 {
 	um_guest_is_init = (getpid() == 1);
 	if (!um_guest_is_init)

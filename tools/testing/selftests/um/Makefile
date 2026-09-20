@@ -10,10 +10,11 @@
 #   make CROSS_COMPILE=aarch64-linux-gnu-
 # and drive the run with um_arm64_rig.sh (see that script's header).
 
-TEST_PROGS := um_boot_test.sh um_core_test.sh um_module_test.sh \
-	      um_bench_test.sh
+TEST_PROGS := um_boot_test.sh um_core_test.sh um_hostfs_root_test.sh \
+	      um_module_test.sh um_bench_test.sh
 TEST_FILES := um_lib.sh um_arm64_rig.sh um_rig_driver.sh
-TEST_GEN_FILES := guest_init guest_core guest_module guest_bench
+TEST_GEN_FILES := guest_init guest_core guest_hostfs guest_module \
+		  guest_bench
 
 CFLAGS += -O2 -Wall -static
 LDLIBS += -lpthread

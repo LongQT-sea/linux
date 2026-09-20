@@ -3,3 +3,4 @@ guest_init
 guest_core
 guest_module
 guest_bench
+guest_hostfs
