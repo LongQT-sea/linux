@@ -142,7 +142,6 @@ int handle_page_fault(unsigned long address, unsigned long ip,
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
-	pmd_t *pmd;
 	pte_t *pte;
 	int err = -EFAULT;
 	unsigned int flags = FAULT_FLAG_DEFAULT;
@@ -203,9 +202,19 @@ retry:
 			goto retry;
 		}
 
-		pmd = pmd_off(mm, address);
-		pte = pte_offset_kernel(pmd, address);
-	} while (!pte_present(*pte));
+		/*
+		 * Re-derive the pte with the fully-checked walker: an
+		 * intermediate level can vanish under us (the deferred
+		 * NEEDSYNC teardown clears entries and frees tables
+		 * outside our mmap read lock during fork-heavy work),
+		 * and descending through a cleared pud/pmd derives the
+		 * next pointer from __va(0) and dereferences arbitrary
+		 * kernel text as a table entry ("Kernel tried to access
+		 * user memory" from this walk). virt_to_pte returns
+		 * NULL for any empty level; redo the fault then.
+		 */
+		pte = virt_to_pte(mm, address);
+	} while (pte == NULL || !pte_present(*pte));
 	err = 0;
 	/*
 	 * The below warning was added in place of
