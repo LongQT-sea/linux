@@ -159,8 +159,18 @@ int handle_page_fault(unsigned long address, unsigned long ip,
 		flags |= FAULT_FLAG_USER;
 retry:
 	vma = um_lock_mm_and_find_vma(mm, address, is_user);
-	if (!vma)
+	if (!vma) {
+		/*
+		 * No containing vma: the discriminator result is the
+		 * absence itself (genuine unmapped access, or a stack
+		 * growth the guard gap refused).
+		 */
+		if (is_user)
+			pr_err_ratelimited(
+				"uml-segv: addr=%016lx ip=%016lx err=%d code=%d vma=none pte=none\n",
+				address, ip, err, *code_out);
 		goto out_nosemaphore;
+	}
 
 	*code_out = SEGV_ACCERR;
 	if (is_write) {
@@ -229,6 +239,28 @@ retry:
 #endif
 
 out:
+	if (is_user && err) {
+		/*
+		 * Discriminator for delivered user SIGSEGVs: pairs the
+		 * fault with the vma state (mapped? writable? exec?) and
+		 * the pte presence at delivery, so misclassified or
+		 * spurious fault classes are distinguishable from
+		 * genuine ones in the log.
+		 */
+		struct vm_area_struct *dvma = find_vma(mm, address);
+		pte_t *dpte = virt_to_pte(mm, address);
+		int invma = dvma && dvma->vm_start <= address;
+
+		pr_err_ratelimited(
+			"uml-segv: addr=%016lx ip=%016lx err=%d code=%d vma=%s[%016lx-%016lx flags=%08lx] pte=%s\n",
+			address, ip, err, *code_out,
+			invma ? "" : "!",
+			invma ? dvma->vm_start : 0UL,
+			invma ? dvma->vm_end : 0UL,
+			invma ? dvma->vm_flags : 0UL,
+			dpte ? (pte_present(*dpte) ? "present" : "absent") :
+			       "none");
+	}
 	mmap_read_unlock(mm);
 out_nosemaphore:
 	return err;
