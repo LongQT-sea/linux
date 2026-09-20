@@ -25,6 +25,7 @@
 
 struct hostfs_fs_info {
 	char *host_root_path;
+	bool host_root_set;
 };
 
 struct hostfs_inode_info {
@@ -997,6 +998,7 @@ static int hostfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 			return -ENOMEM;
 		kfree(fsi->host_root_path);
 		fsi->host_root_path = tmp_root;
+		fsi->host_root_set = true;
 		break;
 	}
 
@@ -1017,11 +1019,34 @@ static int hostfs_parse_monolithic(struct fs_context *fc, void *data)
 		return -ENOMEM;
 	kfree(fsi->host_root_path);
 	fsi->host_root_path = tmp_root;
+	fsi->host_root_set = true;
 	return 0;
 }
 
 static int hostfs_fc_get_tree(struct fs_context *fc)
 {
+	struct hostfs_fs_info *fsi = fc->s_fs_info;
+
+	/*
+	 * The mount source names the host directory to expose, so the
+	 * classic `root=/host/path rootfstype=hostfs` boot selects the
+	 * root. Mount data (hostfs_parse_monolithic) and the hostfs=
+	 * option are more specific and win: only apply the source when
+	 * neither ran. Only an absolute source can name a host root:
+	 * this keeps placeholder sources ("none", and the literal
+	 * "/dev/root" that mount_root_generic() passes on a no-root=
+	 * boot) selecting the default, the host's /.
+	 */
+	if (!fsi->host_root_set && fc->source && fc->source[0] == '/' &&
+	    strcmp(fc->source, "/dev/root") != 0) {
+		char *tmp = kasprintf(GFP_KERNEL, "%s", fc->source);
+
+		if (!tmp)
+			return -ENOMEM;
+		kfree(fsi->host_root_path);
+		fsi->host_root_path = tmp;
+	}
+
 	return get_tree_nodev(fc, hostfs_fill_super);
 }
 
