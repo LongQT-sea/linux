@@ -20,7 +20,7 @@ source "$DIR"/um_lib.sh
 
 # Keep in step with guest_core.c (it also declares PLAN in its output;
 # this is the fallback when a boot produces no output at all).
-NSUBTESTS=16
+NSUBTESTS=18
 
 ktap_print_header
 um_setup

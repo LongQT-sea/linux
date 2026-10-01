@@ -29,6 +29,15 @@
  *	survive; the mask in particular is restored by sigreturn from the
  *	frame the guest kernel wrote.
  *
+ *   fpsimd_threads / sig_fpsimd_frame (arm64; skipped elsewhere)
+ *	Every FP/SIMD register and FPSR/FPCR must survive syscalls and
+ *	page faults while two threads of one process take turns on the
+ *	same host stub, and the signal frame's FP/SIMD record must have
+ *	the ABI layout (struct fpsimd_context, 528 bytes) both ways:
+ *	handlers read it, sigreturn restores from it.  An 8-byte layout
+ *	shift once let one thread's v0 leak into another's in seccomp
+ *	mode while every single-threaded test still passed.
+ *
  * Each subtest runs in its own forked child with a self-imposed alarm,
  * so a hang in one is reported as a failure rather than hanging the
  * whole battery.  Exit codes: 0 pass, 4 skip, anything else fail.
@@ -654,6 +663,359 @@ static int sub_sig_mask_restore(void)
 	return SUB_PASS;
 }
 
+/* ---- FP/SIMD register state (arm64) ------------------------------------ */
+
+#ifdef __aarch64__
+#include <asm/sigcontext.h>
+#include <sys/syscall.h>
+
+/*
+ * A full FP/SIMD register image in the order the asm below loads and
+ * stores it: v0..v31 (512 bytes), then FPSR and FPCR.
+ */
+struct fp_image {
+	unsigned long long v[32][2];
+	unsigned int fpsr;
+	unsigned int fpcr;
+};
+
+/*
+ * FPCR bits that are writable on every ARMv8.0 FP implementation (AHP,
+ * DN, FZ, RMode) and FPSR cumulative flags (QC, IDC, IXC, UFC, OFC,
+ * DZC, IOC).  Each pattern sets a different subset, so a value that
+ * crossed over from another thread is recognizable.
+ */
+#define FPCR_AHP	(1U << 26)
+#define FPCR_DN		(1U << 25)
+#define FPCR_FZ		(1U << 24)
+#define FPCR_RM_SHIFT	22
+
+static void fp_pattern(struct fp_image *img, unsigned int tag)
+{
+	int r;
+
+	for (r = 0; r < 32; r++) {
+		img->v[r][0] = 0xa5a50000c3c30000ULL |
+			       ((unsigned long long)tag << 40) | (r << 8) | 0x10;
+		img->v[r][1] = 0x5a5a00003c3c0000ULL |
+			       ((unsigned long long)tag << 40) | (r << 8) | 0x01;
+	}
+	if (tag & 1) {
+		img->fpsr = 0x08000011;	/* QC | IXC | IOC */
+		img->fpcr = FPCR_FZ | (1U << FPCR_RM_SHIFT);
+	} else {
+		img->fpsr = 0x0000008e;	/* IDC | UFC | OFC | DZC */
+		img->fpcr = FPCR_DN | FPCR_AHP | (2U << FPCR_RM_SHIFT);
+	}
+}
+
+/* Report the first mismatch; returns 0 when the images are equal. */
+static int fp_compare(const char *what, unsigned int tag,
+		      const struct fp_image *want, const struct fp_image *got)
+{
+	int r;
+
+	for (r = 0; r < 32; r++) {
+		if (want->v[r][0] != got->v[r][0] ||
+		    want->v[r][1] != got->v[r][1]) {
+			um_result("# %s: tag %u v%d = %016llx:%016llx, want %016llx:%016llx",
+				  what, tag, r, got->v[r][1], got->v[r][0],
+				  want->v[r][1], want->v[r][0]);
+			return 1;
+		}
+	}
+	if (want->fpsr != got->fpsr || want->fpcr != got->fpcr) {
+		um_result("# %s: tag %u fpsr/fpcr = %08x/%08x, want %08x/%08x",
+			  what, tag, got->fpsr, got->fpcr, want->fpsr,
+			  want->fpcr);
+		return 1;
+	}
+	return 0;
+}
+
+#define FP_LOAD(img)							\
+	"ldp	q0, q1, [" img ", #0]\n\t"				\
+	"ldp	q2, q3, [" img ", #32]\n\t"				\
+	"ldp	q4, q5, [" img ", #64]\n\t"				\
+	"ldp	q6, q7, [" img ", #96]\n\t"				\
+	"ldp	q8, q9, [" img ", #128]\n\t"				\
+	"ldp	q10, q11, [" img ", #160]\n\t"				\
+	"ldp	q12, q13, [" img ", #192]\n\t"				\
+	"ldp	q14, q15, [" img ", #224]\n\t"				\
+	"ldp	q16, q17, [" img ", #256]\n\t"				\
+	"ldp	q18, q19, [" img ", #288]\n\t"				\
+	"ldp	q20, q21, [" img ", #320]\n\t"				\
+	"ldp	q22, q23, [" img ", #352]\n\t"				\
+	"ldp	q24, q25, [" img ", #384]\n\t"				\
+	"ldp	q26, q27, [" img ", #416]\n\t"				\
+	"ldp	q28, q29, [" img ", #448]\n\t"				\
+	"ldp	q30, q31, [" img ", #480]\n\t"				\
+	"ldr	w16, [" img ", #512]\n\t"				\
+	"msr	fpsr, x16\n\t"						\
+	"ldr	w16, [" img ", #516]\n\t"				\
+	"msr	fpcr, x16\n\t"
+
+#define FP_STORE(img)							\
+	"stp	q0, q1, [" img ", #0]\n\t"				\
+	"stp	q2, q3, [" img ", #32]\n\t"				\
+	"stp	q4, q5, [" img ", #64]\n\t"				\
+	"stp	q6, q7, [" img ", #96]\n\t"				\
+	"stp	q8, q9, [" img ", #128]\n\t"				\
+	"stp	q10, q11, [" img ", #160]\n\t"				\
+	"stp	q12, q13, [" img ", #192]\n\t"				\
+	"stp	q14, q15, [" img ", #224]\n\t"				\
+	"stp	q16, q17, [" img ", #256]\n\t"				\
+	"stp	q18, q19, [" img ", #288]\n\t"				\
+	"stp	q20, q21, [" img ", #320]\n\t"				\
+	"stp	q22, q23, [" img ", #352]\n\t"				\
+	"stp	q24, q25, [" img ", #384]\n\t"				\
+	"stp	q26, q27, [" img ", #416]\n\t"				\
+	"stp	q28, q29, [" img ", #448]\n\t"				\
+	"stp	q30, q31, [" img ", #480]\n\t"				\
+	"mrs	x16, fpsr\n\t"						\
+	"str	w16, [" img ", #512]\n\t"				\
+	"mrs	x16, fpcr\n\t"						\
+	"str	w16, [" img ", #516]\n\t"
+
+#define FP_CLOBBERS							\
+	"v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7",			\
+	"v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15",		\
+	"v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",		\
+	"v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31"
+
+/*
+ * Load the image, then for each round: drop the page (madvise, a
+ * syscall), yield to the other thread (a syscall that switches guest
+ * threads), and store to the dropped page (a page fault).  Both kinds
+ * of trap go through UML's register save/restore with nothing but
+ * this code in between, and the registers are stored back only at the
+ * end.  The caller's FPCR is restored before returning to C.
+ */
+static void fp_hold_across_traps(struct fp_image *img, char *page,
+				 unsigned long pagesz, unsigned long rounds)
+{
+	unsigned long saved_fpcr;
+
+	asm volatile("mrs	%[saved], fpcr\n\t"
+		     FP_LOAD("%[img]")
+		     "1:\n\t"
+		     "mov	x0, %[page]\n\t"
+		     "mov	x1, %[pagesz]\n\t"
+		     "mov	x2, #4\n\t"		/* MADV_DONTNEED */
+		     "mov	x8, #233\n\t"		/* __NR_madvise */
+		     "svc	#0\n\t"
+		     "mov	x8, #124\n\t"		/* __NR_sched_yield */
+		     "svc	#0\n\t"
+		     "str	%[rounds], [%[page]]\n\t"
+		     "subs	%[rounds], %[rounds], #1\n\t"
+		     "b.ne	1b\n\t"
+		     FP_STORE("%[img]")
+		     "msr	fpcr, %[saved]\n\t"
+		     : [rounds] "+r" (rounds), [saved] "=&r" (saved_fpcr)
+		     : [img] "r" (img), [page] "r" (page),
+		       [pagesz] "r" (pagesz)
+		     : "x0", "x1", "x2", "x8", "x16", "cc", "memory",
+		       FP_CLOBBERS);
+}
+
+#define FPT_THREADS	2
+#define FPT_CALLS	48
+#define FPT_ROUNDS	8
+
+static pthread_barrier_t fpt_barrier;
+
+static void *fpt_body(void *arg)
+{
+	unsigned int tag = (unsigned int)(unsigned long)arg;
+	long pagesz = sysconf(_SC_PAGESIZE);
+	struct fp_image want, got;
+	char *page;
+	int i;
+
+	page = mmap(NULL, pagesz, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (page == MAP_FAILED)
+		return (void *)1;
+	fp_pattern(&want, tag);
+	pthread_barrier_wait(&fpt_barrier);
+	for (i = 0; i < FPT_CALLS; i++) {
+		got = want;
+		fp_hold_across_traps(&got, page, pagesz, FPT_ROUNDS);
+		if (fp_compare("fpsimd_threads", tag, &want, &got))
+			return (void *)1;
+	}
+	return NULL;
+}
+
+/*
+ * Several threads of one process share one host stub in seccomp mode,
+ * so the register state UML restores into the stub's signal frame for
+ * one thread must completely overwrite what the previous thread left
+ * there.  Any part of the FP/SIMD record UML fails to read or write is
+ * visible here as the other thread's pattern.
+ */
+static int sub_fpsimd_threads(void)
+{
+	pthread_t th[FPT_THREADS];
+	void *ret;
+	int i, bad = 0;
+
+	pthread_barrier_init(&fpt_barrier, NULL, FPT_THREADS);
+	for (i = 0; i < FPT_THREADS; i++) {
+		if (pthread_create(&th[i], NULL, fpt_body,
+				   (void *)(unsigned long)(i + 1)))
+			return SUB_FAIL;
+	}
+	for (i = 0; i < FPT_THREADS; i++) {
+		if (pthread_join(th[i], &ret) || ret)
+			bad = 1;
+	}
+	return bad ? SUB_FAIL : SUB_PASS;
+}
+
+/*
+ * Written by the handler while fp_hold_across_signal() is inside its
+ * asm statement, whose "memory" clobber makes the compiler reload them.
+ */
+static struct fp_image sfr_want, sfr_seen, sfr_after;
+static unsigned int sfr_size;
+static int sfr_handled;
+static int sfr_sve_live;
+
+#define SFR_TAG		7
+#define SFR_EDIT_REG	5
+
+/*
+ * Find the fpsimd record of the frame, check it against the ABI layout
+ * (struct fpsimd_context from the uapi header), copy out the values it
+ * carries, and edit one register in it for sigreturn to restore.
+ */
+static void sfr_handler(int sig, siginfo_t *info, void *ucv)
+{
+	ucontext_t *uc = ucv;
+	unsigned char *res = (unsigned char *)uc->uc_mcontext.__reserved;
+	struct fpsimd_context *fpsimd;
+	struct _aarch64_ctx *h;
+	unsigned int off;
+	int r;
+
+	(void)sig;
+	(void)info;
+	sfr_handled = 1;
+
+	/* Native arm64 always puts the fpsimd record first. */
+	fpsimd = (struct fpsimd_context *)res;
+	if (fpsimd->head.magic != FPSIMD_MAGIC)
+		return;
+	sfr_size = fpsimd->head.size;
+	if (sfr_size != sizeof(struct fpsimd_context))
+		return;
+
+	/*
+	 * A record carrying live SVE registers takes precedence over the
+	 * fpsimd record at sigreturn.  Native arm64 drops live SVE state
+	 * at syscall entry, so there is none here, but emulators may keep
+	 * it; then the edit below cannot be expected to stick.
+	 */
+	for (off = sfr_size;
+	     off + sizeof(*h) <= sizeof(uc->uc_mcontext.__reserved);
+	     off += h->size) {
+		h = (struct _aarch64_ctx *)(res + off);
+		if (!h->magic || h->size < sizeof(*h))
+			break;
+		if (h->magic == SVE_MAGIC && h->size > sizeof(struct sve_context))
+			sfr_sve_live = 1;
+	}
+
+	for (r = 0; r < 32; r++)
+		memcpy(sfr_seen.v[r], &fpsimd->vregs[r], 16);
+	sfr_seen.fpsr = fpsimd->fpsr;
+	sfr_seen.fpcr = fpsimd->fpcr;
+
+	sfr_after = sfr_want;
+	sfr_after.v[SFR_EDIT_REG][0] = ~sfr_want.v[SFR_EDIT_REG][0];
+	sfr_after.v[SFR_EDIT_REG][1] = ~sfr_want.v[SFR_EDIT_REG][1];
+	memcpy(&fpsimd->vregs[SFR_EDIT_REG], sfr_after.v[SFR_EDIT_REG], 16);
+}
+
+/* Load the image, take a signal with nothing in between, store it back. */
+static void fp_hold_across_signal(struct fp_image *img, long pid, long tid)
+{
+	unsigned long saved_fpcr;
+
+	asm volatile("mrs	%[saved], fpcr\n\t"
+		     FP_LOAD("%[img]")
+		     "mov	x0, %[pid]\n\t"
+		     "mov	x1, %[tid]\n\t"
+		     "mov	x2, %[sig]\n\t"
+		     "mov	x8, #131\n\t"		/* __NR_tgkill */
+		     "svc	#0\n\t"
+		     FP_STORE("%[img]")
+		     "msr	fpcr, %[saved]\n\t"
+		     : [saved] "=&r" (saved_fpcr)
+		     : [img] "r" (img), [pid] "r" (pid), [tid] "r" (tid),
+		       [sig] "i" (SIGUSR1)
+		     : "x0", "x1", "x2", "x8", "x16", "cc", "memory",
+		       FP_CLOBBERS);
+}
+
+/*
+ * The signal frame's FP/SIMD record must have the ABI layout -- the
+ * size native arm64 writes and checks, vregs at their ABI offset --
+ * because anything that walks uc_mcontext.__reserved (unwinders,
+ * sanitizers, language runtimes, checkpoint/restore) parses it with
+ * the uapi struct.  sigreturn must read it back from the same offsets.
+ */
+static int sub_sig_fpsimd_frame(void)
+{
+	struct sigaction sa;
+	struct fp_image got;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = sfr_handler;
+	sa.sa_flags = SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGUSR1, &sa, NULL))
+		return SUB_FAIL;
+
+	fp_pattern(&sfr_want, SFR_TAG);
+	got = sfr_want;
+	fp_hold_across_signal(&got, getpid(), syscall(SYS_gettid));
+
+	if (!sfr_handled) {
+		um_result("# sig_fpsimd_frame: handler did not run");
+		return SUB_FAIL;
+	}
+	if (sfr_size != sizeof(struct fpsimd_context) ||
+	    sizeof(struct fpsimd_context) != 528) {
+		um_result("# sig_fpsimd_frame: fpsimd record size %u, want 528",
+			  sfr_size);
+		return SUB_FAIL;
+	}
+	if (fp_compare("sig_fpsimd_frame frame", SFR_TAG, &sfr_want,
+		       &sfr_seen))
+		return SUB_FAIL;
+	if (sfr_sve_live) {
+		um_result("# sig_fpsimd_frame: live SVE record, sigreturn edit not checked");
+		return SUB_PASS;
+	}
+	if (fp_compare("sig_fpsimd_frame sigreturn", SFR_TAG, &sfr_after,
+		       &got))
+		return SUB_FAIL;
+	return SUB_PASS;
+}
+#else
+static int sub_fpsimd_threads(void)
+{
+	return SUB_SKIP;
+}
+
+static int sub_sig_fpsimd_frame(void)
+{
+	return SUB_SKIP;
+}
+#endif
+
 /* ---- driver ------------------------------------------------------------- */
 
 struct subtest {
@@ -678,6 +1040,8 @@ static const struct subtest subtests[] = {
 	{ "sig_regs",		sub_sig_regs },
 	{ "sigaltstack",	sub_sigaltstack },
 	{ "sig_mask_restore",	sub_sig_mask_restore },
+	{ "fpsimd_threads",	sub_fpsimd_threads },
+	{ "sig_fpsimd_frame",	sub_sig_fpsimd_frame },
 };
 
 #define NSUBTESTS ((int)(sizeof(subtests) / sizeof(subtests[0])))

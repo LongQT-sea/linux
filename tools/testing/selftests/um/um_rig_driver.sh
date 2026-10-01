@@ -153,7 +153,7 @@ for mode in $RIG_MODES; do
 	for t in $RIG_TESTS; do
 		case "$t" in
 		boot)	one_test boot "$mode" /guest_init 1 "$RIG_UML_TIMEOUT" ;;
-		core)	one_test core "$mode" /guest_core 16 "$RIG_UML_TIMEOUT" ;;
+		core)	one_test core "$mode" /guest_core 18 "$RIG_UML_TIMEOUT" ;;
 		module)	one_test module "$mode" /guest_module 3 "$RIG_UML_TIMEOUT" ;;
 		bench)	one_test bench "$mode" /guest_bench 1 "$RIG_UML_TIMEOUT" ;;
 		esac
