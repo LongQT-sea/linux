@@ -238,11 +238,9 @@ static inline void set_pte(pte_t *pteptr, pte_t pteval)
 
 #define PFN_PTE_SHIFT		PAGE_SHIFT
 
-static inline void um_tlb_mark_sync(struct mm_struct *mm, unsigned long start,
-				    unsigned long end)
+static inline void __um_tlb_mark_sync(struct mm_struct *mm,
+				      unsigned long start, unsigned long end)
 {
-	guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
-
 	if (!mm->context.sync_tlb_range_to) {
 		mm->context.sync_tlb_range_from = start;
 		mm->context.sync_tlb_range_to = end;
@@ -251,6 +249,22 @@ static inline void um_tlb_mark_sync(struct mm_struct *mm, unsigned long start,
 			mm->context.sync_tlb_range_from = start;
 		if (end > mm->context.sync_tlb_range_to)
 			mm->context.sync_tlb_range_to = end;
+	}
+}
+
+/*
+ * Userspace page tables are not changed from interrupts, so their lock does
+ * not disable them (which costs host syscalls on SMP); the kernel's may be.
+ */
+static inline void um_tlb_mark_sync(struct mm_struct *mm, unsigned long start,
+				    unsigned long end)
+{
+	if (mm == &init_mm) {
+		guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
+		__um_tlb_mark_sync(mm, start, end);
+	} else {
+		guard(spinlock)(&mm->context.sync_tlb_lock);
+		__um_tlb_mark_sync(mm, start, end);
 	}
 }
 
