@@ -122,7 +122,7 @@ config SMP
 
 config UML_MT_STUB
 	bool "Run userspace threads of one process on several CPUs"
-	depends on SMP && MMU && X86_64
+	depends on SMP && MMU && (X86_64 || UML_ARM64)
 	default y
 	help
 	  Without this option, all threads of a userspace process share the

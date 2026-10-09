@@ -176,6 +176,37 @@ static __always_inline void *get_stub_data(void)
 }
 
 /*
+ * Create a thread in the stub process that starts on @stack and calls @fn,
+ * which must not return. Returns the clone() result in the parent.
+ *
+ * arm64 clone() takes (flags, stack, parent_tid, tls, child_tid). The child
+ * starts 16 bytes below @stack (the top of its data slot, which bl does not
+ * push to), so that its stack pointer lies inside the slot from the first
+ * instruction on, for get_stub_data().
+ */
+#define stub_clone_thread(flags, stack, fn)				\
+({									\
+	register long __x8 __asm__("x8") = __NR_clone;			\
+	register long __x0 __asm__("x0") = (flags);			\
+	register long __x1 __asm__("x1") = (stack) - 16;		\
+	register long __x2 __asm__("x2") = 0;				\
+	register long __x3 __asm__("x3") = 0;				\
+	register long __x4 __asm__("x4") = 0;				\
+									\
+	__asm__ volatile (						\
+		"svc #0\n\t"						\
+		"cbnz x0, 1f\n\t"					\
+		"bl " #fn "\n\t"					\
+		"brk #0\n"						\
+		"1:"							\
+		: "+r" (__x0)						\
+		: "r" (__x8), "r" (__x1), "r" (__x2), "r" (__x3),	\
+		  "r" (__x4)						\
+		: "x30", "memory");					\
+	__x0;								\
+})
+
+/*
  * Entry instructions of the stub_exe binary, emitted from file-scope
  * asm in stub_exe.c: move the stack pointer down past the future stub
  * mappings, then branch to real_init() (which never returns).
@@ -198,6 +229,7 @@ extern void stub_segv_handler(int, siginfo_t *, void *);
 extern void stub_syscall_handler(void);
 extern void stub_signal_interrupt(int, siginfo_t *, void *);
 extern void stub_signal_restorer(void);
+extern void stub_worker_start(void);
 
 /*
  * arm64 has no SA_RESTORER: the host sets x30 to the VDSO's
