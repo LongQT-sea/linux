@@ -157,10 +157,12 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				printk("Unexpectedly lost MM child! Affected tasks will segfault.");
 
 				/* Marks the MM as dead */
-				mm_context->id.pid = -1;
+				WRITE_ONCE(mm_context->id.pid, -1);
 
 				stub_data = (void *)mm_context->id.stack;
-				stub_data->futex = FUTEX_IN_KERN;
+				/* A waiter that sees this also sees the pid */
+				smp_store_release(&stub_data->futex,
+						  FUTEX_IN_KERN);
 #if IS_ENABLED(CONFIG_SMP)
 				os_futex_wake(&stub_data->futex);
 #else

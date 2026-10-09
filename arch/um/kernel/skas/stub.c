@@ -121,7 +121,13 @@ stub_signal_interrupt(int sig, siginfo_t *info, void *p)
 	stub_seccomp_save_state(&d->arch_data);
 
 restart_wait:
-	d->futex = FUTEX_IN_KERN;
+	/*
+	 * The kernel runs on other host CPUs and may read the futex word
+	 * without sleeping: hand over everything written so far (signal
+	 * frame, offsets, results) with a release store, and read what the
+	 * kernel wrote for us only after an acquire load.
+	 */
+	__atomic_store_n(&d->futex, FUTEX_IN_KERN, __ATOMIC_RELEASE);
 	do {
 		res = stub_syscall3(__NR_futex, (unsigned long)&d->futex,
 				    FUTEX_WAKE, 1);
@@ -130,7 +136,8 @@ restart_wait:
 	do {
 		res = stub_syscall4(__NR_futex, (unsigned long)&d->futex,
 				    FUTEX_WAIT, FUTEX_IN_KERN, 0);
-	} while (res == -EINTR || d->futex == FUTEX_IN_KERN);
+	} while (res == -EINTR ||
+		 __atomic_load_n(&d->futex, __ATOMIC_ACQUIRE) == FUTEX_IN_KERN);
 
 	if (res < 0 && res != -EAGAIN)
 		stub_syscall1(__NR_exit_group, 1);

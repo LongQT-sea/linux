@@ -177,7 +177,9 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 			}
 
 			data->signal = 0;
-			data->futex = FUTEX_IN_CHILD;
+			/* Paired with the acquire load in stub_signal_interrupt() */
+			__atomic_store_n(&data->futex, FUTEX_IN_CHILD,
+					 __ATOMIC_RELEASE);
 			CATCH_EINTR(syscall(__NR_futex, &data->futex,
 					    FUTEX_WAKE, 1, NULL, NULL, 0));
 		}
@@ -230,7 +232,13 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 				       __func__, errno);
 				goto out_kill;
 			}
-		} while (data->futex == FUTEX_IN_CHILD);
+			/*
+			 * The acquire load pairs with the release stores of
+			 * the stub (and of mm_sigchld_irq()): what it wrote
+			 * before is visible after the loop.
+			 */
+		} while (__atomic_load_n(&data->futex, __ATOMIC_ACQUIRE) ==
+			 FUTEX_IN_CHILD);
 
 		if (__READ_ONCE(mm_idp->pid) < 0)
 			goto out_kill;
