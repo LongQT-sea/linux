@@ -108,12 +108,9 @@ config SMP
 
 	  In UML, kthreads and normal threads (when running in kernel mode)
 	  can be scheduled and executed simultaneously on different virtual
-	  processors. However, the userspace code of normal threads still
-	  runs within their respective single-threaded stubs.
-
-	  That is, SMP support is available both within the kernel and
-	  across different processes, but remains limited within threads
-	  of the same process in userspace.
+	  processors. The userspace code of threads of the same process
+	  only runs in parallel with UML_MT_STUB; otherwise they share the
+	  single-threaded stub of their process.
 
 config UML_MT_STUB
 	bool "Run userspace threads of one process on several CPUs"

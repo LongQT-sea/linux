@@ -240,11 +240,13 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 	struct stub_thread *st;
 
 	/*
-	 * At any given time, only one CPU thread can enter the turnstile to
-	 * operate on the same stub process, including executing stub system
-	 * calls (mmap and munmap).
+	 * Without worker threads, only one CPU thread at a time can enter
+	 * the turnstile to operate on the same stub process, including
+	 * executing stub system calls (mmap and munmap). Worker threads are
+	 * per CPU, and what they share is protected by sync_tlb_lock.
 	 */
-	enter_turnstile(mm_id);
+	if (!use_mt_stub())
+		enter_turnstile(mm_id);
 
 	preempt_disable();
 
@@ -284,7 +286,6 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 
 fail:
 	preempt_enable();
-	exit_turnstile(mm_id);
 	return NULL;
 }
 
@@ -327,7 +328,8 @@ void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
 	if (use_mt_stub())
 		cpumask_clear_cpu(smp_processor_id(), mm_cpumask(mm));
 	preempt_enable();
-	exit_turnstile(mm_id);
+	if (!use_mt_stub())
+		exit_turnstile(mm_id);
 }
 
 unsigned long current_stub_stack(void)
