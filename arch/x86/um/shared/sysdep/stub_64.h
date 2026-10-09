@@ -113,19 +113,25 @@ static __always_inline void trap_myself(void)
 	__asm("int3");
 }
 
+/*
+ * Each stub thread runs its signal handlers on the sigaltstack inside its own
+ * struct stub_data, so the data area is found from the stack pointer: the
+ * first data slot follows the code page, which is found RIP-relative.
+ */
 static __always_inline void *get_stub_data(void)
 {
-	unsigned long ret;
+	unsigned long base, sp;
 
 	asm volatile (
 		"lea 0(%%rip), %0;"
 		"andq %1, %0 ;"
 		"addq %2, %0 ;"
-		: "=a" (ret)
+		: "=a" (base)
 		: "g" (~(UM_KERN_PAGE_SIZE - 1)),
 		  "g" (UM_KERN_PAGE_SIZE));
+	asm volatile ("movq %%rsp, %0" : "=r" (sp));
 
-	return (void *)ret;
+	return (void *)(base + (sp - base) / STUB_SLOT_SIZE * STUB_SLOT_SIZE);
 }
 
 #define stub_start(fn)							\

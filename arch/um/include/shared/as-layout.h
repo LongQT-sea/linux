@@ -23,8 +23,14 @@
 #define STUB_START stub_start
 #define STUB_CODE STUB_START
 #define STUB_DATA (STUB_CODE + UM_KERN_PAGE_SIZE)
+/* Pages of one struct stub_data, there is one per host thread of the stub */
 #define STUB_DATA_PAGES 2
-#define STUB_SIZE ((1 + STUB_DATA_PAGES) * UM_KERN_PAGE_SIZE)
+#define STUB_SLOT_SIZE (STUB_DATA_PAGES * UM_KERN_PAGE_SIZE)
+
+#define STUB_SLOTS 1
+#define STUB_SLOT_DATA(slot) (STUB_DATA + (slot) * STUB_SLOT_SIZE)
+
+#define STUB_SIZE (UM_KERN_PAGE_SIZE + STUB_SLOTS * STUB_SLOT_SIZE)
 #define STUB_END (STUB_START + STUB_SIZE)
 
 #ifndef __ASSEMBLER__
