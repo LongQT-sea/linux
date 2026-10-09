@@ -52,6 +52,12 @@ static int kern_unmap(struct mm_id *mm_idp,
  *
  * Page table pages are only freed after a TLB flush of their range, which
  * also takes sync_tlb_lock, so they cannot go away during a walk.
+ *
+ * A present upper level entry can still carry _PAGE_NEEDSYNC, if a table was
+ * freed and a new one installed before the range was synced (see
+ * um_populate_entry()). Then the host may still map pages of the old table,
+ * so the range is unmapped and everything present below is mapped again
+ * ("force").
  */
 static inline void entry_mkuptodate(unsigned long *entry, unsigned long val)
 {
@@ -60,7 +66,7 @@ static inline void entry_mkuptodate(unsigned long *entry, unsigned long val)
 
 static inline int update_pte_range(pmd_t pmdval, unsigned long addr,
 				   unsigned long end,
-				   struct vm_ops *ops)
+				   struct vm_ops *ops, bool force)
 {
 	pte_t *pte;
 	int ret = 0;
@@ -69,7 +75,7 @@ static inline int update_pte_range(pmd_t pmdval, unsigned long addr,
 	do {
 		pte_t val = ptep_get(pte);
 
-		if (!pte_needsync(val))
+		if (!force && !pte_needsync(val))
 			continue;
 
 		if (pte_present(val)) {
@@ -94,10 +100,11 @@ static inline int update_pte_range(pmd_t pmdval, unsigned long addr,
 
 			ret = ops->mmap(ops->mm_idp, addr, PAGE_SIZE,
 					prot, fd, offset);
-		} else
+		} else if (!force)
 			ret = ops->unmap(ops->mm_idp, addr, PAGE_SIZE);
 
-		entry_mkuptodate(&pte_val(*pte), pte_val(val));
+		if (pte_needsync(val))
+			entry_mkuptodate(&pte_val(*pte), pte_val(val));
 	} while (pte++, addr += PAGE_SIZE, ((addr < end) && !ret));
 	return ret;
 }
@@ -127,9 +134,28 @@ static inline pmd_t *pmd_entry_ptr(pud_t *pudp, pud_t pudval,
 #endif
 }
 
+/* _PAGE_NEEDSYNC of a folded level is the one of the next level */
+static inline bool p4d_entry_needsync(p4d_t p4dval)
+{
+#ifdef __PAGETABLE_PUD_FOLDED
+	return false;
+#else
+	return p4d_needsync(p4dval);
+#endif
+}
+
+static inline bool pud_entry_needsync(pud_t pudval)
+{
+#ifdef __PAGETABLE_PMD_FOLDED
+	return false;
+#else
+	return pud_needsync(pudval);
+#endif
+}
+
 static inline int update_pmd_range(pud_t *pudp, pud_t pudval,
 				   unsigned long addr, unsigned long end,
-				   struct vm_ops *ops)
+				   struct vm_ops *ops, bool force)
 {
 	pmd_t *pmd;
 	unsigned long next;
@@ -138,24 +164,23 @@ static inline int update_pmd_range(pud_t *pudp, pud_t pudval,
 	pmd = pmd_entry_ptr(pudp, pudval, addr);
 	do {
 		pmd_t val = READ_ONCE(*pmd);
+		bool sync = pmd_needsync(val);
 
 		next = pmd_addr_end(addr, end);
-		if (!pmd_present(val)) {
-			if (pmd_needsync(val)) {
-				ret = ops->unmap(ops->mm_idp, addr,
-						 next - addr);
-				entry_mkuptodate(&pmd_val(*pmd), pmd_val(val));
-			}
-		} else {
-			ret = update_pte_range(val, addr, next, ops);
-		}
+		if (sync && !force)
+			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+		if (!ret && pmd_present(val))
+			ret = update_pte_range(val, addr, next, ops,
+					       force || sync);
+		if (sync)
+			entry_mkuptodate(&pmd_val(*pmd), pmd_val(val));
 	} while (pmd++, addr = next, ((addr < end) && !ret));
 	return ret;
 }
 
 static inline int update_pud_range(p4d_t *p4dp, p4d_t p4dval,
 				   unsigned long addr, unsigned long end,
-				   struct vm_ops *ops)
+				   struct vm_ops *ops, bool force)
 {
 	pud_t *pud;
 	unsigned long next;
@@ -164,17 +189,16 @@ static inline int update_pud_range(p4d_t *p4dp, p4d_t p4dval,
 	pud = pud_entry_ptr(p4dp, p4dval, addr);
 	do {
 		pud_t val = READ_ONCE(*pud);
+		bool sync = pud_entry_needsync(val);
 
 		next = pud_addr_end(addr, end);
-		if (!pud_present(val)) {
-			if (pud_needsync(val)) {
-				ret = ops->unmap(ops->mm_idp, addr,
-						 next - addr);
-				entry_mkuptodate(&pud_val(*pud), pud_val(val));
-			}
-		} else {
-			ret = update_pmd_range(pud, val, addr, next, ops);
-		}
+		if (sync && !force)
+			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+		if (!ret && pud_present(val))
+			ret = update_pmd_range(pud, val, addr, next, ops,
+					       force || sync);
+		if (sync)
+			entry_mkuptodate(&pud_val(*pud), pud_val(val));
 	} while (pud++, addr = next, ((addr < end) && !ret));
 	return ret;
 }
@@ -190,17 +214,15 @@ static inline int update_p4d_range(pgd_t *pgd, unsigned long addr,
 	p4d = p4d_offset(pgd, addr);
 	do {
 		p4d_t val = READ_ONCE(*p4d);
+		bool sync = p4d_entry_needsync(val);
 
 		next = p4d_addr_end(addr, end);
-		if (!p4d_present(val)) {
-			if (p4d_needsync(val)) {
-				ret = ops->unmap(ops->mm_idp, addr,
-						 next - addr);
-				entry_mkuptodate(&p4d_val(*p4d), p4d_val(val));
-			}
-		} else {
-			ret = update_pud_range(p4d, val, addr, next, ops);
-		}
+		if (sync)
+			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+		if (!ret && p4d_present(val))
+			ret = update_pud_range(p4d, val, addr, next, ops, sync);
+		if (sync)
+			entry_mkuptodate(&p4d_val(*p4d), p4d_val(val));
 	} while (p4d++, addr = next, ((addr < end) && !ret));
 	return ret;
 }

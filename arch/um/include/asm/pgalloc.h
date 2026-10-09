@@ -15,10 +15,10 @@
 #define pmd_populate_kernel(mm, pmd, pte) \
 	set_pmd(pmd, __pmd(_PAGE_TABLE + (unsigned long) __pa(pte)))
 
-#define pmd_populate(mm, pmd, pte) 				\
-	set_pmd(pmd, __pmd(_PAGE_TABLE +			\
-		((unsigned long long)page_to_pfn(pte) <<	\
-			(unsigned long long) PAGE_SHIFT)))
+#define pmd_populate(mm, pmd, pte)					\
+	um_populate_entry(mm, &pmd_val(*(pmd)), _PAGE_TABLE +		\
+		((unsigned long long)page_to_pfn(pte) <<		\
+			(unsigned long long)PAGE_SHIFT))
 
 /*
  * Allocate and free page tables.

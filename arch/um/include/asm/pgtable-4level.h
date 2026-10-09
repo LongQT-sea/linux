@@ -56,18 +56,20 @@
 	       pgd_val(e))
 
 #define pud_none(x)	(!(pud_val(x) & ~_PAGE_NEEDSYNC))
-#define	pud_bad(x)	((pud_val(x) & (~PAGE_MASK & ~_PAGE_USER)) != _KERNPG_TABLE)
+#define	pud_bad(x)	((pud_val(x) & (~PAGE_MASK & ~_PAGE_USER & ~_PAGE_NEEDSYNC)) != \
+			 _KERNPG_TABLE)
 #define pud_present(x)	(pud_val(x) & _PAGE_PRESENT)
 #define pud_populate(mm, pud, pmd) \
-	set_pud(pud, __pud(_PAGE_TABLE + __pa(pmd)))
+	um_populate_entry(mm, &pud_val(*(pud)), _PAGE_TABLE + __pa(pmd))
 
 #define set_pud(pudptr, pudval) (*(pudptr) = (pudval))
 
 #define p4d_none(x)	(!(p4d_val(x) & ~_PAGE_NEEDSYNC))
-#define	p4d_bad(x)	((p4d_val(x) & (~PAGE_MASK & ~_PAGE_USER)) != _KERNPG_TABLE)
+#define	p4d_bad(x)	((p4d_val(x) & (~PAGE_MASK & ~_PAGE_USER & ~_PAGE_NEEDSYNC)) != \
+			 _KERNPG_TABLE)
 #define p4d_present(x)	(p4d_val(x) & _PAGE_PRESENT)
 #define p4d_populate(mm, p4d, pud) \
-	set_p4d(p4d, __p4d(_PAGE_TABLE + __pa(pud)))
+	um_populate_entry(mm, &p4d_val(*(p4d)), _PAGE_TABLE + __pa(pud))
 
 #define set_p4d(p4dptr, p4dval) (*(p4dptr) = (p4dval))
 

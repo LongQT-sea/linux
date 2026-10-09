@@ -80,7 +80,24 @@ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 #define pte_clear(mm, addr, xp) pte_set_val(*(xp), (phys_t) 0, __pgprot(_PAGE_NEEDSYNC))
 
 #define pmd_none(x)	(!((unsigned long)pmd_val(x) & ~_PAGE_NEEDSYNC))
-#define	pmd_bad(x)	((pmd_val(x) & (~PAGE_MASK & ~_PAGE_USER)) != _KERNPG_TABLE)
+#define	pmd_bad(x)	((pmd_val(x) & (~PAGE_MASK & ~_PAGE_USER & ~_PAGE_NEEDSYNC)) != \
+			 _KERNPG_TABLE)
+
+/*
+ * Populating a table entry of a userspace mm must keep a pending
+ * _PAGE_NEEDSYNC from a previous *_clear(): the host may still map pages in
+ * the range of the freed table, and um_tlb_sync() only unmaps them while it
+ * sees the bit (it then replays the whole new table too).
+ */
+#define um_populate_entry(mm, entryp, val)				\
+do {									\
+	unsigned long *__entryp = (entryp);				\
+	unsigned long __val = (val);					\
+									\
+	if ((mm) != &init_mm)						\
+		__val |= READ_ONCE(*__entryp) & _PAGE_NEEDSYNC;		\
+	WRITE_ONCE(*__entryp, __val);					\
+} while (0)
 
 #define pmd_present(x)	(pmd_val(x) & _PAGE_PRESENT)
 #define pmd_clear(xp)	do { pmd_val(*(xp)) = _PAGE_NEEDSYNC; } while (0)
