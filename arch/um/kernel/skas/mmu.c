@@ -41,6 +41,32 @@ void exit_turnstile(struct mm_id *mm_id)
 	mutex_unlock(__get_turnstile(mm_id));
 }
 
+static void stub_thread_dead(struct stub_thread *st)
+{
+	struct stub_data *stub_data = (void *)st->stack;
+
+	stub_data->futex = FUTEX_IN_KERN;
+#if IS_ENABLED(CONFIG_SMP)
+	os_futex_wake(&stub_data->futex);
+#endif
+}
+
+/*
+ * Kill the stub process and wait for it to be gone, and wake up anybody
+ * waiting for one of its threads. Its tasks die when they next use it.
+ */
+void um_stub_kill(struct mm_id *mm_id)
+{
+	if (mm_id->pid <= 0)
+		return;
+
+	pr_err("Killing stub process %d, its host mappings are inconsistent\n",
+	       mm_id->pid);
+	stub_kill(mm_id);
+
+	stub_thread_dead(&mm_id->main);
+}
+
 /* The stub thread that runs (or is about to run) userspace on this CPU */
 static DEFINE_PER_CPU(struct stub_thread *, running_stub);
 
@@ -68,7 +94,8 @@ void um_kick_userspace(void)
  * another task could change the page tables meanwhile, and the stale queued
  * requests would then be applied after its TLB flush.
  *
- * Return: the stub thread to run on. Preemption is disabled until
+ * Return: the stub thread to run on, or NULL if that failed (the caller must
+ * then kill the task). On success, preemption is disabled until
  * leave_userspace(), and the thread is the target of um_kick_userspace().
  */
 struct stub_thread *enter_userspace(struct mm_id *mm_id)
@@ -88,6 +115,13 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 
 	um_tlb_sync(mm, st);
 
+	/* A failed flush of queued syscalls leaves the host out of sync */
+	if (st->syscall_data_len < 0) {
+		userspace_failed(mm_id, st);
+		leave_userspace(mm_id, st);
+		return NULL;
+	}
+
 	/* Not irq-safe this_cpu_write(), that costs host syscalls on SMP */
 	__this_cpu_write(running_stub, st);
 
@@ -101,6 +135,20 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 		stub_thread_kick(st);
 
 	return st;
+}
+
+/*
+ * Running userspace failed after enter_userspace(). Requests queued to @st
+ * may not have run although the page tables are marked as synced, so the
+ * stub process cannot be trusted anymore.
+ */
+void userspace_failed(struct mm_id *mm_id, struct stub_thread *st)
+{
+	if (st->syscall_data_len)
+		um_stub_kill(mm_id);
+
+	st->syscall_data_len = 0;
+	st->syscall_fd_num = 0;
 }
 
 void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
@@ -212,17 +260,12 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 		*/
 		list_for_each_entry(mm_context, &mm_list, list) {
 			if (mm_context->id.pid == pid) {
-				struct stub_data *stub_data;
 				printk("Unexpectedly lost MM child! Affected tasks will segfault.");
 
 				/* Marks the MM as dead */
 				mm_context->id.pid = -1;
 
-				stub_data = (void *)mm_context->id.main.stack;
-				stub_data->futex = FUTEX_IN_KERN;
-#if IS_ENABLED(CONFIG_SMP)
-				os_futex_wake(&stub_data->futex);
-#endif
+				stub_thread_dead(&mm_context->id.main);
 
 				/*
 				 * NOTE: Currently executing syscalls by

@@ -45,5 +45,7 @@ void notify_mm_kill(int pid);
 
 struct stub_thread *enter_userspace(struct mm_id *mm_id);
 void leave_userspace(struct mm_id *mm_id, struct stub_thread *st);
+void userspace_failed(struct mm_id *mm_id, struct stub_thread *st);
+void um_stub_kill(struct mm_id *mm_id);
 
 #endif

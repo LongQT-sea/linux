@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <time.h>
 #include <mem_user.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -147,6 +148,42 @@ bad_wait:
 	fatal_sigsegv();
 }
 
+/* Whether the stub process @pid exited (or was already reaped) */
+static bool stub_process_dead(int pid)
+{
+	siginfo_t info = {};
+
+	if (pid < 0)
+		return true;
+
+	if (waitid(P_PID, pid, &info, WEXITED | WNOHANG | WNOWAIT | __WALL) < 0)
+		return errno == ECHILD;
+
+	return info.si_pid == pid;
+}
+
+/*
+ * Kill the stub process of @mm_id and wait until it is gone, so that none of
+ * its host mappings remain. Used when the host mappings can no longer be
+ * trusted to match the page tables.
+ */
+void stub_kill(struct mm_id *mm_id)
+{
+	int pid = mm_id->pid;
+
+	if (pid <= 0)
+		return;
+
+	kill(pid, SIGKILL);
+	/*
+	 * Wait until all of its threads are gone (ECHILD if the SIGCHLD IRQ
+	 * handler reaped it first). Only then mark it dead: other CPUs take
+	 * that to mean that none of its host mappings is left.
+	 */
+	CATCH_EINTR(waitpid(pid, NULL, __WALL));
+	__WRITE_ONCE(mm_id->pid, -1);
+}
+
 /* Pass the FDs for queued syscalls to @st and wake it up */
 static void stub_wake(struct stub_thread *st)
 {
@@ -187,15 +224,28 @@ static void stub_wake(struct stub_thread *st)
 }
 
 /*
+ * Waits for stub threads that only run stub code (to execute queued requests,
+ * or to start) give up after this long: the caller may hold sync_tlb_lock,
+ * with other CPUs spinning on it, and stub data is writable by userspace in
+ * other threads of the stub process.
+ */
+#define STUB_WAIT_MAX_SECS 10
+
+/*
  * Wait until @st is back in its signal handler (@until_kern), or only until
  * it is no longer in the state it was woken up in (it may report that its
- * queued syscalls are done). Returns -1 if the stub process died.
+ * queued syscalls are done). Returns -1 if the stub process died, or if
+ * @bounded and it took longer than STUB_WAIT_MAX_SECS.
  */
-static int stub_wait(struct stub_thread *st, int until_kern)
+static int stub_wait(struct stub_thread *st, int until_kern, int bounded)
 {
 	struct stub_data *data = (void *)st->stack;
+	struct timespec timeout = { .tv_sec = 0, .tv_nsec = 100000000 };
+	struct timespec start, now;
 	unsigned int val;
 	int ret;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
 
 	for (;;) {
 		/*
@@ -218,11 +268,29 @@ static int stub_wait(struct stub_thread *st, int until_kern)
 			return 0;
 
 		ret = syscall(__NR_futex, &data->futex, FUTEX_WAIT, val,
-			      NULL, NULL, 0);
-		if (ret < 0 && errno != EINTR && errno != EAGAIN) {
+			      &timeout, NULL, 0);
+		if (ret < 0 && errno != EINTR && errno != EAGAIN &&
+		    errno != ETIMEDOUT) {
 			printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
 			       __func__, errno);
 			return -1;
+		}
+
+		/*
+		 * The SIGCHLD IRQ handler that notices a dead stub may not
+		 * run for a while (another CPU may get the signal, interrupts
+		 * may be disabled), so also check ourselves now and then.
+		 */
+		if (ret < 0 && errno != EAGAIN) {
+			if (stub_process_dead(st->mm->pid))
+				return -1;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			if (bounded &&
+			    now.tv_sec - start.tv_sec > STUB_WAIT_MAX_SECS) {
+				printk(UM_KERN_ERR "%s : stub thread %d did not respond\n",
+				       __func__, st->tid);
+				return -1;
+			}
 		}
 	}
 }
@@ -242,7 +310,7 @@ int wait_stub_done_seccomp(struct stub_thread *st, int running,
 		if (!running)
 			stub_wake(st);
 
-		if (stub_wait(st, 1))
+		if (stub_wait(st, 1, bounded))
 			goto out_kill;
 
 		if (__READ_ONCE(mm_idp->pid) < 0)
@@ -604,6 +672,8 @@ void userspace(struct uml_pt_regs *regs)
 		 * until leave_userspace().
 		 */
 		st = enter_userspace(mm_id);
+		if (!st)
+			fatal_sigsegv();
 
 		/*
 		 * When we are in time-travel mode, userspace can theoretically
@@ -632,6 +702,8 @@ void userspace(struct uml_pt_regs *regs)
 
 		if (using_seccomp) {
 			struct stub_data *proc_data = (void *)st->stack;
+			unsigned short si_offset;
+			int nr_syscalls;
 
 			err = set_stub_state(regs, proc_data, singlestepping());
 			if (err) {
@@ -641,22 +713,25 @@ void userspace(struct uml_pt_regs *regs)
 			}
 
 			/* Must have been reset by the syscall caller */
-			if (proc_data->restart_wait != 0)
-				panic("Programming error: Flag to only run syscalls in child was not cleared!");
+			if (proc_data->restart_wait != 0) {
+				printk(UM_KERN_ERR "%s - flag to only run syscalls in stub was not cleared",
+				       __func__);
+				goto fatal;
+			}
 
 			/* Mark pending syscalls for flushing */
-			proc_data->syscall_data_len = st->syscall_data_len;
+			nr_syscalls = st->syscall_data_len;
+			proc_data->syscall_data_len = nr_syscalls;
 
 			if (wait_stub_done_seccomp(st, 0, 0, 0))
 				goto fatal;
 
 			sig = proc_data->signal;
 
-			if (sig == SIGTRAP && proc_data->err != 0) {
+			if (nr_syscalls && proc_data->err != 0) {
 				printk(UM_KERN_ERR "%s - Error flushing stub syscalls",
 				       __func__);
 				syscall_stub_dump_error(st);
-				st->syscall_data_len = proc_data->err;
 				goto fatal;
 			}
 
@@ -670,18 +745,30 @@ void userspace(struct uml_pt_regs *regs)
 				goto fatal;
 			}
 
-			if (proc_data->si_offset > sizeof(proc_data->sigstack) - sizeof(*si))
-				panic("%s - Invalid siginfo offset from child", __func__);
+			si_offset = __READ_ONCE(proc_data->si_offset);
+			if (si_offset > sizeof(proc_data->sigstack) - sizeof(*si)) {
+				printk(UM_KERN_ERR "%s - Invalid siginfo offset from stub",
+				       __func__);
+				goto fatal;
+			}
 
 			si = &si_local;
-			memcpy(si, &proc_data->sigstack[proc_data->si_offset], sizeof(*si));
+			memcpy(si, &proc_data->sigstack[si_offset], sizeof(*si));
 
 			regs->is_user = 1;
 
 			/* Fill in ORIG_RAX and extract fault information */
 			PT_SYSCALL_NR(regs->gp) = si->si_syscall;
 			if (sig == SIGSEGV) {
-				mcontext_t *mcontext = (void *)&proc_data->sigstack[proc_data->mctx_offset];
+				unsigned short mctx_offset = __READ_ONCE(proc_data->mctx_offset);
+				mcontext_t *mcontext;
+
+				if (mctx_offset > sizeof(proc_data->sigstack) - sizeof(*mcontext)) {
+					printk(UM_KERN_ERR "%s - Invalid mcontext offset from stub",
+					       __func__);
+					goto fatal;
+				}
+				mcontext = (void *)&proc_data->sigstack[mctx_offset];
 
 				GET_FAULTINFO_FROM_MC(regs->faultinfo, mcontext);
 			}
@@ -831,6 +918,7 @@ void userspace(struct uml_pt_regs *regs)
 		continue;
 
 fatal:
+		userspace_failed(mm_id, st);
 		leave_userspace(mm_id, st);
 		fatal_sigsegv();
 	}

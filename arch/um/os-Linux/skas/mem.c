@@ -10,7 +10,6 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <init.h>
-#include <kern_util.h>
 #include <as-layout.h>
 #include <mm_id.h>
 #include <os.h>
@@ -86,10 +85,12 @@ static inline long do_syscall_stub(struct stub_thread *st)
 
 	if (using_seccomp) {
 		proc_data->restart_wait = 1;
-		/* The task cannot continue if its stub is gone */
-		if (wait_stub_done_seccomp(st, 0, 1, 1) &&
-		    current_mm_id() == st->mm)
-			fatal_sigsegv();
+		if (wait_stub_done_seccomp(st, 0, 1, 1)) {
+			/* The stub is gone, report as an error */
+			st->syscall_data_len = -EIO;
+			st->syscall_fd_num = 0;
+			return st->syscall_data_len;
+		}
 	} else {
 		n = ptrace_setregs(pid, syscall_regs);
 		if (n < 0) {
