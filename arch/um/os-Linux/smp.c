@@ -8,7 +8,6 @@
 #include <pthread.h>
 #include <signal.h>
 #include <kern_util.h>
-#include <um_malloc.h>
 #include <init.h>
 #include <os.h>
 #include <smp.h>
@@ -28,6 +27,13 @@ int uml_curr_cpu(void)
 
 static pthread_t cpu_threads[CONFIG_NR_CPUS];
 
+/*
+ * Static rather than kmalloc()ed: the data is released on the host thread's
+ * own stack, where KASAN's free-stack recording (dump_trace() walks up to a
+ * THREAD_SIZE boundary) would run off the end of the pthread stack.
+ */
+static struct cpu_thread_data cpu_thread_data[CONFIG_NR_CPUS];
+
 static void *cpu_thread(void *arg)
 {
 	struct cpu_thread_data *data = arg;
@@ -41,19 +47,13 @@ static void *cpu_thread(void *arg)
 
 int os_start_cpu_thread(int cpu)
 {
-	struct cpu_thread_data *data;
+	struct cpu_thread_data *data = &cpu_thread_data[cpu];
 	sigset_t sigset, oset;
 	int err;
 
-	data = uml_kmalloc(sizeof(*data), UM_GFP_ATOMIC);
-	if (!data)
-		return -ENOMEM;
-
 	sigfillset(&sigset);
-	if (sigprocmask(SIG_SETMASK, &sigset, &oset) < 0) {
-		err = errno;
-		goto err;
-	}
+	if (sigprocmask(SIG_SETMASK, &sigset, &oset) < 0)
+		return -errno;
 
 	data->cpu = cpu;
 	data->sigset = oset;
@@ -62,13 +62,9 @@ int os_start_cpu_thread(int cpu)
 	if (sigprocmask(SIG_SETMASK, &oset, NULL) < 0)
 		panic("Failed to restore the signal mask, errno = %d", errno);
 	if (err != 0)
-		goto err;
+		return -err;
 
 	return 0;
-
-err:
-	kfree(data);
-	return -err;
 }
 
 void os_start_secondary(void *arg, jmp_buf *switch_buf)
@@ -81,7 +77,6 @@ void os_start_secondary(void *arg, jmp_buf *switch_buf)
 	if (sigprocmask(SIG_SETMASK, &data->sigset, NULL) < 0)
 		panic("Failed to restore the signal mask, errno = %d", errno);
 
-	kfree(data);
 	longjmp(*switch_buf, 1);
 
 	/* unreachable */
