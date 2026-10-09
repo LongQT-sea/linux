@@ -269,7 +269,7 @@ int um_tlb_sync(struct mm_struct *mm)
 		ops.mmap = map;
 		ops.unmap = unmap;
 
-		guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
+		guard(spinlock)(&mm->context.sync_tlb_lock);
 		return __um_tlb_sync(mm, &ops);
 	}
 
