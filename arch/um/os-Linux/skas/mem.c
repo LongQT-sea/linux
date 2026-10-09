@@ -22,6 +22,15 @@
 
 extern char __syscall_stub_start[];
 
+/*
+ * stub_syscall_handler() starts below the top of the sigstack by what a call
+ * would have pushed (x86: the return address), unless the backend needs
+ * something else for its stack pointer alignment.
+ */
+#ifndef STUB_SYSCALL_SP_OFFSET
+#define STUB_SYSCALL_SP_OFFSET sizeof(void *)
+#endif
+
 void syscall_stub_dump_error(struct mm_id *mm_idp)
 {
 	struct stub_data *proc_data = (void *)mm_idp->stack;
@@ -81,7 +90,7 @@ static int __init init_syscall_regs(void)
 	syscall_regs[REGS_SP_INDEX] = STUB_DATA +
 		offsetof(struct stub_data, sigstack) +
 		sizeof(((struct stub_data *) 0)->sigstack) -
-		sizeof(void *);
+		STUB_SYSCALL_SP_OFFSET;
 
 	return 0;
 }

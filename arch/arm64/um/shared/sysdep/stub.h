@@ -38,6 +38,13 @@
 
 #define __syscall_clobber "memory"
 
+/*
+ * In ptrace mode the kernel enters stub_syscall_handler() with this much
+ * room below the top of the sigstack: sp must stay 16-byte aligned, the
+ * host checks that on every sp-relative access (SCTLR_EL1.SA0).
+ */
+#define STUB_SYSCALL_SP_OFFSET 16
+
 static __always_inline long stub_syscall0(long syscall)
 {
 	register long x8 __asm__("x8") = syscall;
