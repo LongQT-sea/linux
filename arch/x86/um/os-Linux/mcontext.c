@@ -13,6 +13,8 @@
 #undef sigcontext
 #include <sysdep/ptrace.h>
 #include <sysdep/mcontext.h>
+#include <stdbool.h>
+#include <asm-generic/rwonce.h>
 #include <arch.h>
 
 void get_regs_from_mc(struct uml_pt_regs *regs, mcontext_t *mc)
@@ -125,24 +127,28 @@ static struct _fpstate *get_fpstate(struct stub_data *data,
 	if (res->sw_reserved.magic1 != FP_XSTATE_MAGIC1) {
 		*fp_size = sizeof(struct _fpstate);
 	} else {
+		/*
+		 * Read the size only once: other threads of the stub process
+		 * may run userspace and write to the signal frame meanwhile.
+		 */
+		__u32 size = __READ_ONCE(res->sw_reserved.extended_size);
 		char *magic2_addr;
 
-		magic2_addr = (void *)res;
-		magic2_addr += res->sw_reserved.extended_size;
-		magic2_addr -= FP_XSTATE_MAGIC2_SIZE;
-
 		/* We still need to be within our stack */
-		if ((void *)magic2_addr >
+		if (size < sizeof(struct _fpstate) + FP_XSTATE_MAGIC2_SIZE ||
+		    (void *)res + size >
 		    (void *)data->sigstack + sizeof(data->sigstack))
 			return NULL;
+
+		magic2_addr = (void *)res;
+		magic2_addr += size - FP_XSTATE_MAGIC2_SIZE;
 
 		/* If we do not read MAGIC2, then we did something wrong */
 		if (*(__u32 *)magic2_addr != FP_XSTATE_MAGIC2)
 			return NULL;
 
 		/* Remove MAGIC2 from the size, we do not save/restore it */
-		*fp_size = res->sw_reserved.extended_size -
-			   FP_XSTATE_MAGIC2_SIZE;
+		*fp_size = size - FP_XSTATE_MAGIC2_SIZE;
 	}
 
 	return res;
@@ -155,9 +161,15 @@ int get_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	struct _fpstate *fpstate_stub;
 	struct _xstate_64 *xstate_stub;
 	int fp_size, xstate_size;
+	unsigned short mctx_offset = __READ_ONCE(data->mctx_offset);
 
-	/* mctx_offset is verified by wait_stub_done_seccomp */
-	mcontext = (void *)&data->sigstack[data->mctx_offset];
+	/*
+	 * Other threads of the stub process may run userspace and write to
+	 * the stub data meanwhile, read the offset only once.
+	 */
+	if (mctx_offset > sizeof(data->sigstack) - sizeof(*mcontext))
+		return -EINVAL;
+	mcontext = (void *)&data->sigstack[mctx_offset];
 
 	get_regs_from_mc(regs, mcontext);
 
@@ -218,8 +230,7 @@ int set_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	struct _xstate_64 *xstate_stub;
 	int fp_size, xstate_size;
 
-	/* mctx_offset is verified by wait_stub_done_seccomp */
-	mcontext = (void *)&data->sigstack[data->mctx_offset];
+	mcontext = (void *)&data->sigstack[__READ_ONCE(data->mctx_offset)];
 
 	if ((unsigned long)mcontext < (unsigned long)data->sigstack ||
 	    (unsigned long)mcontext >
@@ -240,6 +251,9 @@ int set_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	xstate_stub = (void *)fpstate_stub;
 	xstate_size = fp_size;
 #endif
+
+	if (xstate_size > host_fp_size)
+		return -ENOSPC;
 
 	memcpy(xstate_stub, &regs->fp, xstate_size);
 

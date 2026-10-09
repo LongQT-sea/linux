@@ -5,6 +5,7 @@
  * Copyright (C) 2002- 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <unistd.h>
@@ -12,12 +13,12 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <time.h>
 #include <mem_user.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
-#include <poll.h>
 #include <asm/unistd.h>
 #include <as-layout.h>
 #include <init.h>
@@ -111,30 +112,64 @@ bad_wait:
 	fatal_sigsegv();
 }
 
-/*
- * Is this stub process actually gone? kill(pid, 0) is not enough: an
- * unreaped zombie still answers it, and a dead stub on a !SMP guest is
- * exactly that: nothing reaps it while the only kernel thread is
- * stuck in the futex wait (mm_sigchld_irq() never gets its SIGCHLD).
- * A pidfd becomes pollable when the task exits, zombie or not, and
- * does not depend on the caller being the parent.
- */
-static bool stub_is_dead(int pid)
+/* Whether the stub process @pid exited (or was already reaped) */
+static bool stub_process_dead(int pid)
 {
-	struct pollfd pfd = { .events = POLLIN };
-	struct timespec ts = { };
-	int fd, res, saved;
+	siginfo_t info = {};
 
-	fd = syscall(__NR_pidfd_open, pid, 0);
-	if (fd < 0)
-		return errno == ESRCH;
+	/* 0: another CPU is killing it, see stub_kill() */
+	if (pid <= 0)
+		return pid < 0;
 
-	pfd.fd = fd;
-	res = syscall(__NR_ppoll, &pfd, 1, &ts, NULL);
-	saved = errno;
-	os_close_file(fd);
-	errno = saved;
-	return res > 0 && (pfd.revents & POLLIN);
+	if (waitid(P_PID, pid, &info, WEXITED | WNOHANG | WNOWAIT | __WALL) < 0)
+		return errno == ECHILD;
+
+	return info.si_pid == pid;
+}
+
+/*
+ * Kill the stub process of @mm_id and wait until it is gone, so that none of
+ * its host mappings remain. Used when the host mappings can no longer be
+ * trusted to match the page tables.
+ *
+ * Return: the pid of the process this call killed, or 0 if it was dead
+ * already or killed by another CPU (it is gone when this returns either way).
+ */
+int stub_kill(struct mm_id *mm_id)
+{
+	int pid = __atomic_load_n(&mm_id->pid, __ATOMIC_ACQUIRE);
+
+	/*
+	 * Claim the process by setting the pid to 0 ("being killed"), so that
+	 * only one CPU kills and reaps it: a second waitpid() could reap an
+	 * unrelated process that got the pid meanwhile. The SIGCHLD IRQ
+	 * handler no longer finds it by its pid; if it reaps it anyway,
+	 * waitpid() below returns ECHILD.
+	 */
+	while (pid > 0 &&
+	       !__atomic_compare_exchange_n(&mm_id->pid, &pid, 0, false,
+					    __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+		;
+
+	if (pid > 0) {
+		kill(pid, SIGKILL);
+		/*
+		 * Wait until all of its threads are gone. Only then mark it
+		 * dead: other CPUs take that to mean that none of its host
+		 * mappings is left.
+		 */
+		CATCH_EINTR(waitpid(pid, NULL, __WALL));
+		__atomic_store_n(&mm_id->pid, -1, __ATOMIC_RELEASE);
+		return pid;
+	}
+
+	/* Another CPU is killing it: wait until it is gone */
+	while (pid == 0) {
+		sched_yield();
+		pid = __atomic_load_n(&mm_id->pid, __ATOMIC_ACQUIRE);
+	}
+
+	return 0;
 }
 
 /* Pass the FDs for queued syscalls to @st and wake it up */
@@ -178,19 +213,65 @@ static void stub_wake(struct stub_thread *st)
 }
 
 /*
+ * Waits for stub threads that only run stub code (to execute queued requests,
+ * or to start) give up after this long: the caller may hold sync_tlb_lock,
+ * with other CPUs spinning on it, and stub data is writable by userspace in
+ * other threads of the stub process.
+ */
+#define STUB_WAIT_MAX_SECS 10
+
+/*
+ * A stub thread that is still runnable (or in uninterruptible sleep) after
+ * STUB_WAIT_MAX_SECS gets more time, as the host may just be overloaded, but
+ * not without end: guest code in another thread can redirect the stub thread
+ * into a busy loop (stub data is writable), and the waiter may hold a lock
+ * that other CPUs spin on.
+ */
+#define STUB_WAIT_LIMIT_SECS 60
+
+/*
+ * The host state of stub thread @tid of process @pid, as in
+ * /proc/PID/task/TID/stat ('R' runnable, 'D' uninterruptible, 'S' sleeping,
+ * ...), or 0 if it cannot be read.
+ */
+static char stub_thread_host_state(int pid, int tid)
+{
+	char path[64], buf[256];
+	int fd, n, i;
+
+	snprintf(path, sizeof(path), "/proc/%d/task/%d/stat", pid, tid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = 0;
+	/* "tid (comm) S ...": the comm may contain spaces and parentheses */
+	for (i = n - 1; i >= 0 && buf[i] != ')'; i--)
+		;
+	return i >= 0 && i + 2 < n && buf[i + 1] == ' ' ? buf[i + 2] : 0;
+}
+
+/*
  * Wait until @st is back in its signal handler (@until_kern), or only until
  * it is no longer in the state it was woken up in (it may report that its
- * queued syscalls are done). Returns -1 if the stub process died.
+ * queued syscalls are done). Returns -1 if the stub process died, or if
+ * @bounded and it took longer than STUB_WAIT_MAX_SECS.
  */
-static int stub_wait(struct stub_thread *st, int until_kern)
+static int stub_wait(struct stub_thread *st, int until_kern, int bounded)
 {
 	struct stub_data *data = (void *)st->stack;
+	struct timespec timeout = { .tv_sec = 0, .tv_nsec = 100000000 };
+	struct timespec first, start, now;
 	unsigned int val;
 	int ret, pid;
 
-	for (;;) {
-		struct timespec ts = { .tv_sec = 5 };
+	clock_gettime(CLOCK_MONOTONIC, &first);
+	start = first;
 
+	for (;;) {
 		/*
 		 * We need to check whether the child is still alive
 		 * before and after the FUTEX_WAIT call. Before, in
@@ -216,32 +297,60 @@ static int stub_wait(struct stub_thread *st, int until_kern)
 			return 0;
 
 		ret = syscall(__NR_futex, &data->futex, FUTEX_WAIT, val,
-			      &ts, NULL, 0);
-		if (ret < 0 && errno == ETIMEDOUT) {
-			/*
-			 * Bounded-wait backstop: on !SMP the
-			 * futex wake in mm_sigchld_irq() is
-			 * compiled out, so a dead stub is only
-			 * noticed here if a signal happens to
-			 * interrupt the wait (EINTR) and its
-			 * IRQ gets to run; without that rescue
-			 * the guest hangs here forever. Probe
-			 * the stub; only a genuinely dead one
-			 * breaks the wait, so this can never
-			 * fire spuriously.
-			 */
-			if (stub_is_dead(pid)) {
+			      &timeout, NULL, 0);
+		if (ret < 0 && errno != EINTR && errno != EAGAIN &&
+		    errno != ETIMEDOUT) {
+			printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
+			       __func__, errno);
+			return -1;
+		}
+
+		/*
+		 * The SIGCHLD IRQ handler that notices a dead stub may not
+		 * run for a while (another CPU may get the signal, interrupts
+		 * may be disabled), so also check ourselves now and then.
+		 */
+		if (ret < 0 && errno != EAGAIN) {
+			if (stub_process_dead(pid)) {
 				printk(UM_KERN_ERR "%s : stub pid %d died during futex wait\n",
 				       __func__, pid);
 				return -1;
 			}
-			/* Alive but slow to answer; keep waiting. */
-			continue;
-		}
-		if (ret < 0 && errno != EINTR && errno != EAGAIN) {
-			printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
-			       __func__, errno);
-			return -1;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			if (bounded &&
+			    now.tv_sec - start.tv_sec > STUB_WAIT_MAX_SECS) {
+				char state;
+
+				/*
+				 * This thread may not have run for a while
+				 * itself (the host is busy): the stub may have
+				 * answered since the futex wait timed out.
+				 */
+				val = __atomic_load_n(&data->futex, __ATOMIC_ACQUIRE);
+				if (val == FUTEX_IN_KERN ||
+				    (!until_kern && val != FUTEX_IN_CHILD))
+					return 0;
+
+				state = stub_thread_host_state(pid, st->tid);
+
+				/*
+				 * Only give up on a thread that sleeps (in its
+				 * futex wait, as nothing else blocks in stub code
+				 * for long): one that is runnable or in an
+				 * uninterruptible wait is only slowed down by the
+				 * host (CPU or memory pressure), and will answer.
+				 */
+				if ((state == 'R' || state == 'D') &&
+				    now.tv_sec - first.tv_sec <= STUB_WAIT_LIMIT_SECS) {
+					printk(UM_KERN_WARNING "%s : stub thread %d slow to respond (host state %c), still waiting\n",
+					       __func__, st->tid, state);
+					start = now;
+					continue;
+				}
+				printk(UM_KERN_ERR "%s : stub thread %d did not respond (host state %c)\n",
+				       __func__, st->tid, state ? state : '?');
+				return -1;
+			}
 		}
 	}
 }
@@ -261,7 +370,7 @@ int wait_stub_done_seccomp(struct stub_thread *st, int running,
 		if (!running)
 			stub_wake(st);
 
-		if (stub_wait(st, 1))
+		if (stub_wait(st, 1, bounded))
 			goto out_kill;
 
 		if (__READ_ONCE(mm_idp->pid) < 0)
@@ -670,6 +779,8 @@ void userspace(struct uml_pt_regs *regs)
 		 * until leave_userspace().
 		 */
 		st = enter_userspace(mm_id);
+		if (!st)
+			fatal_sigsegv();
 
 		/*
 		 * When we are in time-travel mode, userspace can theoretically
@@ -698,6 +809,8 @@ void userspace(struct uml_pt_regs *regs)
 
 		if (using_seccomp) {
 			struct stub_data *proc_data = (void *)st->stack;
+			unsigned short si_offset;
+			int nr_syscalls;
 
 			err = set_stub_state(regs, proc_data, singlestepping());
 			if (err) {
@@ -707,22 +820,25 @@ void userspace(struct uml_pt_regs *regs)
 			}
 
 			/* Must have been reset by the syscall caller */
-			if (proc_data->restart_wait != 0)
-				panic("Programming error: Flag to only run syscalls in child was not cleared!");
+			if (proc_data->restart_wait != 0) {
+				printk(UM_KERN_ERR "%s - flag to only run syscalls in stub was not cleared",
+				       __func__);
+				goto fatal;
+			}
 
 			/* Mark pending syscalls for flushing */
-			proc_data->syscall_data_len = st->syscall_data_len;
+			nr_syscalls = st->syscall_data_len;
+			proc_data->syscall_data_len = nr_syscalls;
 
 			if (wait_stub_done_seccomp(st, 0, 0, 0))
 				goto fatal;
 
 			sig = proc_data->signal;
 
-			if (sig == SIGTRAP && proc_data->err != 0) {
+			if (nr_syscalls && proc_data->err != 0) {
 				printk(UM_KERN_ERR "%s - Error flushing stub syscalls",
 				       __func__);
 				syscall_stub_dump_error(st);
-				st->syscall_data_len = proc_data->err;
 				goto fatal;
 			}
 
@@ -736,18 +852,30 @@ void userspace(struct uml_pt_regs *regs)
 				goto fatal;
 			}
 
-			if (proc_data->si_offset > sizeof(proc_data->sigstack) - sizeof(*si))
-				panic("%s - Invalid siginfo offset from child", __func__);
+			si_offset = __READ_ONCE(proc_data->si_offset);
+			if (si_offset > sizeof(proc_data->sigstack) - sizeof(*si)) {
+				printk(UM_KERN_ERR "%s - Invalid siginfo offset from stub",
+				       __func__);
+				goto fatal;
+			}
 
 			si = &si_local;
-			memcpy(si, &proc_data->sigstack[proc_data->si_offset], sizeof(*si));
+			memcpy(si, &proc_data->sigstack[si_offset], sizeof(*si));
 
 			regs->is_user = 1;
 
 			/* Fill in ORIG_RAX and extract fault information */
 			PT_SYSCALL_NR(regs->gp) = si->si_syscall;
 			if (sig == SIGSEGV) {
-				mcontext_t *mcontext = (void *)&proc_data->sigstack[proc_data->mctx_offset];
+				unsigned short mctx_offset = __READ_ONCE(proc_data->mctx_offset);
+				mcontext_t *mcontext;
+
+				if (mctx_offset > sizeof(proc_data->sigstack) - sizeof(*mcontext)) {
+					printk(UM_KERN_ERR "%s - Invalid mcontext offset from stub",
+					       __func__);
+					goto fatal;
+				}
+				mcontext = (void *)&proc_data->sigstack[mctx_offset];
 
 				GET_FAULTINFO_FROM_MC(regs->faultinfo, mcontext);
 			}
@@ -1062,6 +1190,7 @@ void userspace(struct uml_pt_regs *regs)
 		continue;
 
 fatal:
+		userspace_failed(mm_id, st);
 		leave_userspace(mm_id, st);
 		fatal_sigsegv();
 	}

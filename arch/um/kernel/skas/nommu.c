@@ -61,6 +61,12 @@ void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
 	exit_turnstile(mm_id);
 }
 
+void userspace_failed(struct mm_id *mm_id, struct stub_thread *st)
+{
+	st->syscall_data_len = 0;
+	st->syscall_fd_num = 0;
+}
+
 void um_kick_userspace(void)
 {
 	struct stub_thread *st = __this_cpu_read(running_stub);
