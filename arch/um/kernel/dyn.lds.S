@@ -181,3 +181,10 @@ SECTIONS
 
 ASSERT(__syscall_stub_end - __syscall_stub_start <= PAGE_SIZE,
        "STUB code must not be larger than one page");
+
+/*
+ * The seccomp filter of the stub (stub_exe.c) only lets syscalls through from
+ * the first 4 KiB of the stub code page, also with bigger pages.
+ */
+ASSERT(__syscall_stub_end - __syscall_stub_start <= 4096,
+       "STUB code must fit in the 4 KiB its seccomp filter allows syscalls from");
