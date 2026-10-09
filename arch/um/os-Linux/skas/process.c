@@ -710,8 +710,8 @@ void userspace(struct uml_pt_regs *regs)
 
 		/*
 		 * Pick the stub thread to run on, and serialise against other
-		 * CPUs using the same stub process. Preemption is disabled
-		 * until leave_userspace().
+		 * CPUs using the same stub process. On success, preemption is
+		 * disabled until leave_userspace().
 		 */
 		st = enter_userspace(mm_id);
 		if (!st)
@@ -746,6 +746,7 @@ void userspace(struct uml_pt_regs *regs)
 			struct stub_data *proc_data = (void *)st->stack;
 			unsigned short si_offset;
 			int nr_syscalls;
+			int ack;
 
 			err = set_stub_state(regs, proc_data, singlestepping());
 			if (err) {
@@ -765,7 +766,36 @@ void userspace(struct uml_pt_regs *regs)
 			nr_syscalls = st->syscall_data_len;
 			proc_data->syscall_data_len = nr_syscalls;
 
-			if (wait_stub_done_seccomp(st, 0, 0, 0))
+			/*
+			 * If sync_tlb_lock is held (see enter_userspace()),
+			 * keep it until the queued syscalls are done.
+			 */
+			ack = st->sync_locked && st->syscall_data_len;
+			proc_data->ack_syscalls = ack;
+			if (!ack)
+				userspace_running(mm_id, st);
+
+			stub_wake(st);
+
+			if (ack) {
+				if (stub_wait(st, 0, 1))
+					goto fatal_wait;
+				/*
+				 * If a request failed, the stub reports back
+				 * without FUTEX_SYSCALLS_DONE. Kill it before
+				 * anybody else relies on the host mappings.
+				 */
+				if (__READ_ONCE(proc_data->futex) != FUTEX_SYSCALLS_DONE &&
+				    proc_data->err) {
+					printk(UM_KERN_ERR "%s - Error flushing stub syscalls",
+					       __func__);
+					syscall_stub_dump_error(st);
+					goto fatal;
+				}
+				userspace_running(mm_id, st);
+			}
+
+			if (wait_stub_done_seccomp(st, 1, 0, 0))
 				goto fatal;
 
 			sig = proc_data->signal;
@@ -959,6 +989,9 @@ void userspace(struct uml_pt_regs *regs)
 		}
 		continue;
 
+fatal_wait:
+		printk(UM_KERN_ERR "%s : failed to wait for stub, pid = %d, tid = %d\n",
+		       __func__, mm_id->pid, st->tid);
 fatal:
 		userspace_failed(mm_id, st);
 		leave_userspace(mm_id, st);

@@ -286,6 +286,33 @@ static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
 	um_tlb_mark_sync(mm, addr, addr + length);
 }
 
+/*
+ * Clearing the accessed bit only needs the host mapping to be made
+ * inaccessible eventually (so that a later access is noticed), which the next
+ * entry to userspace does; it is not worth a synchronous host update.
+ */
+/*
+ * Permission upgrades are already marked by set_ptes(), and the next entry to
+ * userspace replays them, no need to update the host right away. Old host
+ * mappings can only cause spurious faults.
+ */
+#define flush_tlb_fix_spurious_fault(vma, address, ptep)		\
+do {									\
+	unsigned long __addr = (address);				\
+									\
+	(void)(ptep);							\
+	um_tlb_mark_sync((vma)->vm_mm, __addr, __addr + PAGE_SIZE);	\
+} while (0)
+
+/*
+ * Clearing the accessed bit only needs the host mapping to be made
+ * inaccessible eventually (so that a later access is noticed), which the next
+ * entry to userspace does; it is not worth a synchronous host update.
+ */
+#define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
+#define ptep_clear_flush_young(vma, address, ptep)			\
+	ptep_test_and_clear_young(vma, address, ptep)
+
 #define __HAVE_ARCH_PTE_SAME
 static inline int pte_same(pte_t pte_a, pte_t pte_b)
 {

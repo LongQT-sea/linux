@@ -184,6 +184,16 @@ restart_wait:
 		goto restart_wait;
 	}
 
+	/* The kernel waits for the queued syscalls before letting others in */
+	if (d->ack_syscalls) {
+		d->ack_syscalls = 0;
+		d->futex = FUTEX_SYSCALLS_DONE;
+		do {
+			res = stub_syscall3(__NR_futex, (unsigned long)&d->futex,
+					    FUTEX_WAKE, 1);
+		} while (res == -EINTR);
+	}
+
 	/* Restore arch dependent state that is not part of the mcontext */
 	stub_seccomp_restore_state(&d->arch_data);
 

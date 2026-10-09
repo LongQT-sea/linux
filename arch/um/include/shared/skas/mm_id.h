@@ -24,6 +24,9 @@ struct stub_thread {
 	unsigned long stack;
 	int syscall_data_len;
 
+	/* sync_tlb_lock is held from enter_userspace() to userspace_running() */
+	int sync_locked;
+
 	/* Only used with SECCOMP mode */
 	int syscall_fd_num;
 	int syscall_fd_map[STUB_MAX_FDS];
@@ -55,6 +58,7 @@ void exit_turnstile(struct mm_id *mm_id) __releases(__get_turnstile(mm_id));
 void notify_mm_kill(int pid);
 
 struct stub_thread *enter_userspace(struct mm_id *mm_id);
+void userspace_running(struct mm_id *mm_id, struct stub_thread *st);
 void userspace_failed(struct mm_id *mm_id, struct stub_thread *st);
 void um_stub_kill(struct mm_id *mm_id);
 void leave_userspace(struct mm_id *mm_id, struct stub_thread *st);

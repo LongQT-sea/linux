@@ -29,6 +29,8 @@
 
 #define FUTEX_IN_CHILD 0
 #define FUTEX_IN_KERN 1
+/* In the child, which executed its queued syscalls (see ack_syscalls) */
+#define FUTEX_SYSCALLS_DONE 2
 
 struct stub_init_data {
 	int seccomp;
@@ -75,6 +77,8 @@ struct stub_data {
 
 	/* data shared with signal handler (only used in seccomp mode) */
 	short restart_wait;
+	/* report FUTEX_SYSCALLS_DONE before returning to userspace */
+	short ack_syscalls;
 	unsigned int futex;
 	int signal;
 	unsigned short si_offset;

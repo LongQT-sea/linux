@@ -261,30 +261,83 @@ static int __um_tlb_sync(struct mm_struct *mm, struct vm_ops *ops)
 }
 
 /*
+ * Replay the pending page table changes of a userspace @mm by queueing
+ * mmap/munmap requests to stub thread @st. The caller holds sync_tlb_lock.
+ */
+int um_tlb_sync_locked(struct mm_struct *mm, struct stub_thread *st)
+{
+	struct vm_ops ops = {
+		.st = st,
+		.mmap = map,
+		.unmap = unmap,
+	};
+
+	lockdep_assert_held(&mm->context.sync_tlb_lock);
+
+	return __um_tlb_sync(mm, &ops);
+}
+
+/*
  * Replay pending page table changes of @mm onto the host: directly for the
  * kernel (init_mm), else by queueing mmap/munmap requests to stub thread @st.
  */
 int um_tlb_sync(struct mm_struct *mm, struct stub_thread *st)
 {
-	struct vm_ops ops;
+	struct vm_ops ops = {
+		.mmap = kern_map,
+		.unmap = kern_unmap,
+	};
 
 	if (mm != &init_mm) {
-		ops.st = st;
-		ops.mmap = map;
-		ops.unmap = unmap;
-
 		guard(spinlock)(&mm->context.sync_tlb_lock);
-		return __um_tlb_sync(mm, &ops);
+		return um_tlb_sync_locked(mm, st);
 	}
-
-	ops.st = NULL;
-	ops.mmap = kern_map;
-	ops.unmap = kern_unmap;
 
 	guard(spinlock_irqsave)(&mm->page_table_lock);
 	guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
 
 	return __um_tlb_sync(mm, &ops);
+}
+
+/*
+ * Flush a range of a userspace mm. Normally this only marks the range, and
+ * the next entry to userspace replays the changes. But if any other CPU may
+ * be running userspace of @mm (with CONFIG_UML_MT_STUB), it could still use
+ * the old host mappings, so they are updated right away by the thread of the
+ * stub process that does not run userspace. A host munmap()/mmap() is a TLB
+ * shootdown on the host for all threads of the stub process, so the flush is
+ * complete when this returns.
+ */
+void um_tlb_flush_range(struct mm_struct *mm, unsigned long start,
+			unsigned long end)
+{
+	struct mm_context *ctx = &mm->context;
+	int err;
+
+	/* The kernel syncs its own mappings when it faults on them */
+	if (mm == &init_mm) {
+		um_tlb_mark_sync(mm, start, end);
+		return;
+	}
+
+	guard(spinlock)(&ctx->sync_tlb_lock);
+
+	__um_tlb_mark_sync(mm, start, end);
+
+	if (!um_mm_running_elsewhere(mm))
+		return;
+
+	err = um_tlb_sync_locked(mm, &ctx->id.main);
+	if (!err)
+		err = syscall_stub_flush(&ctx->id.main);
+	/*
+	 * Old mappings may still be there, and the caller is about to free
+	 * the pages: get rid of the whole stub process, its tasks then die.
+	 */
+	if (err) {
+		pr_err("%s: failed to update host mappings: %d\n", __func__, err);
+		um_stub_kill(&ctx->id);
+	}
 }
 
 void flush_tlb_all(void)
@@ -301,9 +354,5 @@ void flush_tlb_all(void)
 
 void flush_tlb_mm(struct mm_struct *mm)
 {
-	struct vm_area_struct *vma;
-	VMA_ITERATOR(vmi, mm, 0);
-
-	for_each_vma(vmi, vma)
-		um_tlb_mark_sync(mm, vma->vm_start, vma->vm_end);
+	um_tlb_flush_range(mm, 0, TASK_SIZE);
 }
