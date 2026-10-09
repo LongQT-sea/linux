@@ -134,24 +134,23 @@ void os_idle_prepare(void)
  */
 void os_idle_sleep(void)
 {
-	sigset_t set;
+	sigset_t set, old;
 
 	/*
-	 * Block SIGALRM while performing the need_resched check.
-	 * Note that, because IRQs are disabled, the IPI signal is
-	 * already blocked.
+	 * Block SIGALRM and the IPI signal while performing the checks:
+	 * disabling IRQs only defers their handling in software, so one that
+	 * arrived since may already be recorded, and one arriving from now on
+	 * stays pending on the host and wakes the poll through the signalfd.
 	 */
 	sigemptyset(&set);
 	sigaddset(&set, SIGALRM);
-	sigprocmask(SIG_BLOCK, &set, NULL);
+	sigaddset(&set, IPI_SIGNAL);
+	sigprocmask(SIG_BLOCK, &set, &old);
 
-	/*
-	 * Because disabling IRQs does not block SIGALRM, it is also
-	 * necessary to check for any pending timer alarms.
-	 */
-	if (!uml_need_resched() && !timer_alarm_pending())
+	if (!uml_need_resched() && !timer_alarm_pending() &&
+	    !os_signals_deferred())
 		os_poll(1, &wake_signals);
 
 	/* Restore the signal mask. */
-	sigprocmask(SIG_UNBLOCK, &set, NULL);
+	sigprocmask(SIG_SETMASK, &old, NULL);
 }

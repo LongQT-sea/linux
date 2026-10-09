@@ -67,10 +67,20 @@ static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
 #define SIGCHLD_BIT 2
 #define SIGCHLD_MASK (1 << SIGCHLD_BIT)
 
+/* IPIs that arrived while signals were disabled, see os-Linux/smp.c */
+#define IPI_BIT 3
+#define IPI_MASK (1 << IPI_BIT)
+
 __thread int signals_enabled;
 #if IS_ENABLED(CONFIG_UML_TIME_TRAVEL_SUPPORT)
 static int signals_blocked, signals_blocked_pending;
 #endif
+/*
+ * Signal handlers set bits here while signals are disabled. The IPI handler
+ * can interrupt the others (its signal is never blocked), so they set them
+ * with atomic read-modify-writes; unblock_signals() takes them while signals
+ * are enabled, when the handlers do not defer.
+ */
 static __thread unsigned int signals_pending;
 static __thread unsigned int signals_active;
 
@@ -101,12 +111,12 @@ static void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
 		if (time_travel_mode == TT_MODE_EXTERNAL)
 			sigio_run_timetravel_handlers();
 		else
-			signals_pending |= SIGIO_MASK;
+			__atomic_fetch_or(&signals_pending, SIGIO_MASK, __ATOMIC_RELAXED);
 		return;
 	}
 
 	if (!enabled && (sig == SIGCHLD)) {
-		signals_pending |= SIGCHLD_MASK;
+		__atomic_fetch_or(&signals_pending, SIGCHLD_MASK, __ATOMIC_RELAXED);
 		return;
 	}
 
@@ -134,7 +144,7 @@ static void timer_alarm_handler(int sig, struct siginfo *unused_si, mcontext_t *
 
 	enabled = signals_enabled;
 	if (!signals_enabled) {
-		signals_pending |= SIGALRM_MASK;
+		__atomic_fetch_or(&signals_pending, SIGALRM_MASK, __ATOMIC_RELAXED);
 		return;
 	}
 
@@ -267,7 +277,6 @@ static inline void __block_signals(void)
 	if (!signals_enabled)
 		return;
 
-	os_local_ipi_disable();
 	barrier();
 	signals_enabled = 0;
 }
@@ -279,7 +288,6 @@ static inline void __unblock_signals(void)
 
 	signals_enabled = 1;
 	barrier();
-	os_local_ipi_enable();
 }
 
 void block_signals(void)
@@ -297,6 +305,7 @@ void block_signals(void)
 void unblock_signals(void)
 {
 	int save_pending;
+	unsigned int __maybe_unused save_ipis = 0;
 
 	if (signals_enabled == 1)
 		return;
@@ -327,6 +336,11 @@ void unblock_signals(void)
 			return;
 
 		signals_pending = 0;
+#if IS_ENABLED(CONFIG_SMP)
+		/* Like signals_pending, only changed while signals are off */
+		if (save_pending & IPI_MASK)
+			save_ipis = os_take_pending_ipis();
+#endif
 
 		/*
 		 * We have pending interrupts, so disable signals, as the
@@ -350,6 +364,13 @@ void unblock_signals(void)
 		if (save_pending & SIGIO_MASK)
 			sig_handler_common(SIGIO, NULL, NULL);
 
+#if IS_ENABLED(CONFIG_SMP)
+		if (save_ipis) {
+			os_run_ipis(save_ipis);
+			save_ipis = 0;
+		}
+#endif
+
 		if (save_pending & SIGCHLD_MASK) {
 			struct uml_pt_regs regs = {};
 
@@ -370,6 +391,20 @@ void unblock_signals(void)
 		um_trace_signals_on();
 		__unblock_signals();
 	}
+}
+
+#if IS_ENABLED(CONFIG_SMP)
+/* Called by the IPI signal handler while signals are disabled */
+void os_mark_ipi_pending(void)
+{
+	__atomic_fetch_or(&signals_pending, IPI_MASK, __ATOMIC_RELAXED);
+}
+#endif
+
+/* Whether interrupts arrived while this CPU had them disabled */
+int os_signals_deferred(void)
+{
+	return __atomic_load_n(&signals_pending, __ATOMIC_RELAXED) != 0;
 }
 
 int um_get_signals(void)
@@ -421,7 +456,7 @@ void mark_sigio_pending(void)
 	 * is blocked while this can be called, and the
 	 * timer signal (SIGALRM) cannot happen.
 	 */
-	signals_pending |= SIGIO_MASK;
+	__atomic_fetch_or(&signals_pending, SIGIO_MASK, __ATOMIC_RELAXED);
 }
 
 void block_signals_hard(void)
@@ -465,7 +500,7 @@ void unblock_signals_hard(void)
 	while (__atomic_load_n(&signals_blocked_pending, __ATOMIC_SEQ_CST)) {
 		if (signals_enabled) {
 			/* signals are enabled so we can touch this */
-			signals_pending |= SIGIO_MASK;
+			__atomic_fetch_or(&signals_pending, SIGIO_MASK, __ATOMIC_RELAXED);
 			/*
 			 * this is a bit inefficient, but that's
 			 * not really important

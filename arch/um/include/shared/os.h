@@ -344,6 +344,7 @@ extern void block_signals_trace(void);
 extern void unblock_signals_trace(void);
 extern void um_trace_signals_on(void);
 extern void um_trace_signals_off(void);
+extern int os_signals_deferred(void);
 
 /* time-travel */
 extern void deliver_time_travel_irqs(void);
@@ -354,11 +355,9 @@ void os_init_smp(void);
 int os_start_cpu_thread(int cpu);
 void os_start_secondary(void *arg, jmp_buf *switch_buf);
 int os_send_ipi(int cpu, int vector);
-void os_local_ipi_enable(void);
-void os_local_ipi_disable(void);
-#else /* !CONFIG_SMP */
-static inline void os_local_ipi_enable(void) { }
-static inline void os_local_ipi_disable(void) { }
+unsigned int os_take_pending_ipis(void);
+void os_run_ipis(unsigned int vectors);
+void os_mark_ipi_pending(void);
 #endif /* CONFIG_SMP */
 
 #endif

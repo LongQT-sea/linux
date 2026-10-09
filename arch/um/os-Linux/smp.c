@@ -71,7 +71,10 @@ void os_start_secondary(void *arg, jmp_buf *switch_buf)
 {
 	struct cpu_thread_data *data = arg;
 
-	sigaddset(&data->sigset, IPI_SIGNAL);
+	/*
+	 * IPIs stay unblocked: until this CPU enables interrupts (its
+	 * signals_enabled starts at 0), the handler only records them.
+	 */
 	sigaddset(&data->sigset, SIGIO);
 
 	if (sigprocmask(SIG_SETMASK, &data->sigset, NULL) < 0)
@@ -91,30 +94,26 @@ int os_send_ipi(int cpu, int vector)
 	return pthread_sigqueue(cpu_threads[cpu], IPI_SIGNAL, value);
 }
 
-static void __local_ipi_set(int enable)
-{
-	sigset_t sigset;
+/* IPI vectors that arrived on this CPU while its signals were disabled */
+static __thread unsigned int ipis_pending;
 
-	sigemptyset(&sigset);
-	sigaddset(&sigset, IPI_SIGNAL);
-
-	if (sigprocmask(enable ? SIG_UNBLOCK : SIG_BLOCK, &sigset, NULL) < 0)
-		panic("%s: sigprocmask failed, errno = %d", __func__, errno);
-}
-
-void os_local_ipi_enable(void)
-{
-	__local_ipi_set(1);
-}
-
-void os_local_ipi_disable(void)
-{
-	__local_ipi_set(0);
-}
-
+/*
+ * IPIs are deferred in software while signals are disabled, like the other
+ * signals the kernel handles as interrupts (see os-Linux/signal.c), instead
+ * of blocking the signal with sigprocmask() on every interrupt disable and
+ * enable, which costs two host syscalls each time. Vectors are idempotent
+ * (the work they stand for is queued elsewhere), so a bitmask is enough.
+ */
 static void ipi_sig_handler(int sig, siginfo_t *si, void *uc)
 {
 	int save_errno = errno;
+
+	if (!signals_enabled) {
+		ipis_pending |= 1U << si->si_value.sival_int;
+		os_mark_ipi_pending();
+		errno = save_errno;
+		return;
+	}
 
 	signals_enabled = 0;
 	um_trace_signals_off();
@@ -125,6 +124,26 @@ static void ipi_sig_handler(int sig, siginfo_t *si, void *uc)
 	signals_enabled = 1;
 
 	errno = save_errno;
+}
+
+/* Only called while signals are enabled: the handler does not defer then */
+unsigned int os_take_pending_ipis(void)
+{
+	unsigned int ipis = ipis_pending;
+
+	ipis_pending = 0;
+	return ipis;
+}
+
+/* Run deferred IPIs, with signals disabled */
+void os_run_ipis(unsigned int vectors)
+{
+	while (vectors) {
+		int vector = __builtin_ctz(vectors);
+
+		vectors &= vectors - 1;
+		uml_ipi_handler(vector);
+	}
 }
 
 void __init os_init_smp(void)
