@@ -32,7 +32,8 @@
 
 #ifdef CONFIG_MMU
 
-extern int um_tlb_sync(struct mm_struct *mm);
+struct stub_thread;
+extern int um_tlb_sync(struct mm_struct *mm, struct stub_thread *st);
 
 extern void flush_tlb_all(void);
 extern void flush_tlb_mm(struct mm_struct *mm);
@@ -55,7 +56,7 @@ static inline void flush_tlb_kernel_range(unsigned long start,
 	um_tlb_mark_sync(&init_mm, start, end);
 
 	/* Kernel needs to be synced immediately */
-	um_tlb_sync(&init_mm);
+	um_tlb_sync(&init_mm, NULL);
 }
 
 #else /* !CONFIG_MMU */
@@ -64,7 +65,10 @@ static inline void flush_tlb_kernel_range(unsigned long start,
  * With NOMMU the kernel and userspace share a single host address space,
  * so there is nothing to synchronise and all TLB flushes are no-ops.
  */
-static inline int um_tlb_sync(struct mm_struct *mm) { return 0; }
+static inline int um_tlb_sync(struct mm_struct *mm, struct stub_thread *st)
+{
+	return 0;
+}
 static inline void flush_tlb_all(void) { }
 static inline void flush_tlb_mm(struct mm_struct *mm) { }
 static inline void flush_tlb_page(struct vm_area_struct *vma,

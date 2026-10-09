@@ -103,7 +103,7 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		 * flushed yet. Syncing them should fix the pagefault (if not
 		 * we'll get here again and panic).
 		 */
-		err = um_tlb_sync(&init_mm);
+		err = um_tlb_sync(&init_mm, NULL);
 		if (err == -ENOMEM)
 			report_enomem();
 		if (err)

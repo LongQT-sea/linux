@@ -872,9 +872,8 @@ static irqreturn_t um_timer(int irq, void *dev)
 	 * is not executing. Do not notify there and avoid spurious scheduling.
 	 */
 	if (time_travel_mode != TT_MODE_INFCPU &&
-	    time_travel_mode != TT_MODE_EXTERNAL &&
-	    get_current()->mm)
-		os_alarm_process(current_mm_id()->pid);
+	    time_travel_mode != TT_MODE_EXTERNAL)
+		um_kick_userspace();
 
 	evt->event_handler(evt);
 

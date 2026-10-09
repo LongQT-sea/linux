@@ -41,6 +41,77 @@ void exit_turnstile(struct mm_id *mm_id)
 	mutex_unlock(__get_turnstile(mm_id));
 }
 
+/* The stub thread that runs (or is about to run) userspace on this CPU */
+static DEFINE_PER_CPU(struct stub_thread *, running_stub);
+
+/*
+ * Make the userspace code running on this CPU (if any) trap back into the
+ * kernel. A stub thread still in its signal handler gets the signal as soon
+ * as it returns to userspace, so nothing is lost if this races with
+ * entering userspace.
+ */
+void um_kick_userspace(void)
+{
+	struct stub_thread *st = __this_cpu_read(running_stub);
+
+	if (st)
+		stub_thread_kick(st);
+}
+
+/**
+ * enter_userspace() - prepare to run userspace of @mm_id on this CPU
+ * @mm_id: The stub process
+ *
+ * Picks the stub thread to run on, and replays pending page table changes
+ * by queueing them to that thread. They are executed when the thread is
+ * woken up to run userspace, so the CPU must not be preempted in between:
+ * another task could change the page tables meanwhile, and the stale queued
+ * requests would then be applied after its TLB flush.
+ *
+ * Return: the stub thread to run on. Preemption is disabled until
+ * leave_userspace(), and the thread is the target of um_kick_userspace().
+ */
+struct stub_thread *enter_userspace(struct mm_id *mm_id)
+{
+	struct mm_context *ctx = container_of(mm_id, struct mm_context, id);
+	struct mm_struct *mm = container_of(ctx, struct mm_struct, context);
+	struct stub_thread *st = &mm_id->main;
+
+	/*
+	 * At any given time, only one CPU thread can enter the turnstile to
+	 * operate on the same stub process, including executing stub system
+	 * calls (mmap and munmap).
+	 */
+	enter_turnstile(mm_id);
+
+	preempt_disable();
+
+	um_tlb_sync(mm, st);
+
+	/* Not irq-safe this_cpu_write(), that costs host syscalls on SMP */
+	__this_cpu_write(running_stub, st);
+	/* An IPI handler on this CPU sees it from here on */
+	barrier();
+
+	/*
+	 * Work that arrived since interrupt_end() did not kick us, as
+	 * running_stub was not set yet; make the stub trap right away.
+	 */
+	if (need_resched() || test_thread_flag(TIF_SIGPENDING) ||
+	    test_thread_flag(TIF_NOTIFY_SIGNAL) ||
+	    test_thread_flag(TIF_NOTIFY_RESUME))
+		stub_thread_kick(st);
+
+	return st;
+}
+
+void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
+{
+	__this_cpu_write(running_stub, NULL);
+	preempt_enable();
+	exit_turnstile(mm_id);
+}
+
 unsigned long current_stub_stack(void)
 {
 	if (current->mm == NULL)
@@ -55,14 +126,6 @@ struct mm_id *current_mm_id(void)
 		return NULL;
 
 	return &current->mm->context.id;
-}
-
-void current_mm_sync(void)
-{
-	if (current->mm == NULL)
-		return;
-
-	um_tlb_sync(current->mm);
 }
 
 int init_new_context(struct task_struct *task, struct mm_struct *mm)
