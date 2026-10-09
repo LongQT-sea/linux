@@ -137,108 +137,132 @@ static bool stub_is_dead(int pid)
 	return res > 0 && (pfd.revents & POLLIN);
 }
 
-void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
+/* Pass the FDs for queued syscalls to @st and wake it up */
+static void stub_wake(struct stub_thread *st)
 {
-	struct stub_data *data = (void *)mm_idp->stack;
-	int ret;
+	struct stub_data *data = (void *)st->stack;
+	const char byte = 0;
+	struct iovec iov = {
+		.iov_base = (void *)&byte,
+		.iov_len = sizeof(byte),
+	};
+	union {
+		char data[CMSG_SPACE(sizeof(st->syscall_fd_map))];
+		struct cmsghdr align;
+	} ctrl;
+	struct msghdr msgh = {
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+	};
+
+	if (st->syscall_fd_num) {
+		unsigned int fds_size = sizeof(int) * st->syscall_fd_num;
+		struct cmsghdr *cmsg;
+
+		msgh.msg_control = ctrl.data;
+		msgh.msg_controllen = CMSG_SPACE(fds_size);
+		cmsg = CMSG_FIRSTHDR(&msgh);
+		cmsg->cmsg_level = SOL_SOCKET;
+		cmsg->cmsg_type = SCM_RIGHTS;
+		cmsg->cmsg_len = CMSG_LEN(fds_size);
+		memcpy(CMSG_DATA(cmsg), st->syscall_fd_map, fds_size);
+
+		CATCH_EINTR(syscall(__NR_sendmsg, st->mm->sock, &msgh, 0));
+	}
+
+	data->signal = 0;
+	/* Paired with the acquire load in stub_signal_interrupt() */
+	__atomic_store_n(&data->futex, FUTEX_IN_CHILD, __ATOMIC_RELEASE);
+	CATCH_EINTR(syscall(__NR_futex, &data->futex,
+			    FUTEX_WAKE, 1, NULL, NULL, 0));
+}
+
+/*
+ * Wait until @st is back in its signal handler (@until_kern), or only until
+ * it is no longer in the state it was woken up in (it may report that its
+ * queued syscalls are done). Returns -1 if the stub process died.
+ */
+static int stub_wait(struct stub_thread *st, int until_kern)
+{
+	struct stub_data *data = (void *)st->stack;
+	unsigned int val;
+	int ret, pid;
+
+	for (;;) {
+		struct timespec ts = { .tv_sec = 5 };
+
+		/*
+		 * We need to check whether the child is still alive
+		 * before and after the FUTEX_WAIT call. Before, in
+		 * case it just died but we still updated data->futex
+		 * to FUTEX_IN_CHILD. And after, in case it died while
+		 * we were waiting (and SIGCHLD woke us up, see the
+		 * IRQ handler in mmu.c).
+		 *
+		 * Either way, if PID is negative, then we have no
+		 * choice but to kill the task.
+		 */
+		pid = __READ_ONCE(st->mm->pid);
+		if (pid < 0)
+			return -1;
+
+		/*
+		 * Paired with the release stores of the stub (and of
+		 * stub_thread_dead()): what it wrote before is visible.
+		 */
+		val = __atomic_load_n(&data->futex, __ATOMIC_ACQUIRE);
+		if (val == FUTEX_IN_KERN ||
+		    (!until_kern && val != FUTEX_IN_CHILD))
+			return 0;
+
+		ret = syscall(__NR_futex, &data->futex, FUTEX_WAIT, val,
+			      &ts, NULL, 0);
+		if (ret < 0 && errno == ETIMEDOUT) {
+			/*
+			 * Bounded-wait backstop: on !SMP the
+			 * futex wake in mm_sigchld_irq() is
+			 * compiled out, so a dead stub is only
+			 * noticed here if a signal happens to
+			 * interrupt the wait (EINTR) and its
+			 * IRQ gets to run; without that rescue
+			 * the guest hangs here forever. Probe
+			 * the stub; only a genuinely dead one
+			 * breaks the wait, so this can never
+			 * fire spuriously.
+			 */
+			if (stub_is_dead(pid)) {
+				printk(UM_KERN_ERR "%s : stub pid %d died during futex wait\n",
+				       __func__, pid);
+				return -1;
+			}
+			/* Alive but slow to answer; keep waiting. */
+			continue;
+		}
+		if (ret < 0 && errno != EINTR && errno != EAGAIN) {
+			printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
+			       __func__, errno);
+			return -1;
+		}
+	}
+}
+
+/*
+ * Wake @st (unless @running) and wait for it to report back from its signal
+ * handler, for at most STUB_WAIT_MAX_SECS if @bounded. Returns 0, or -1 if
+ * the stub process died or misbehaved.
+ */
+int wait_stub_done_seccomp(struct stub_thread *st, int running,
+			   int wait_sigsys, int bounded)
+{
+	struct mm_id *mm_idp = st->mm;
+	struct stub_data *data = (void *)st->stack;
 
 	do {
-		const char byte = 0;
-		struct iovec iov = {
-			.iov_base = (void *)&byte,
-			.iov_len = sizeof(byte),
-		};
-		union {
-			char data[CMSG_SPACE(sizeof(mm_idp->syscall_fd_map))];
-			struct cmsghdr align;
-		} ctrl;
-		struct msghdr msgh = {
-			.msg_iov = &iov,
-			.msg_iovlen = 1,
-		};
+		if (!running)
+			stub_wake(st);
 
-		if (!running) {
-			if (mm_idp->syscall_fd_num) {
-				unsigned int fds_size =
-					sizeof(int) * mm_idp->syscall_fd_num;
-				struct cmsghdr *cmsg;
-
-				msgh.msg_control = ctrl.data;
-				msgh.msg_controllen = CMSG_SPACE(fds_size);
-				cmsg = CMSG_FIRSTHDR(&msgh);
-				cmsg->cmsg_level = SOL_SOCKET;
-				cmsg->cmsg_type = SCM_RIGHTS;
-				cmsg->cmsg_len = CMSG_LEN(fds_size);
-				memcpy(CMSG_DATA(cmsg), mm_idp->syscall_fd_map,
-				       fds_size);
-
-				CATCH_EINTR(syscall(__NR_sendmsg, mm_idp->sock,
-						&msgh, 0));
-			}
-
-			data->signal = 0;
-			/* Paired with the acquire load in stub_signal_interrupt() */
-			__atomic_store_n(&data->futex, FUTEX_IN_CHILD,
-					 __ATOMIC_RELEASE);
-			CATCH_EINTR(syscall(__NR_futex, &data->futex,
-					    FUTEX_WAKE, 1, NULL, NULL, 0));
-		}
-
-		do {
-			struct timespec ts = { .tv_sec = 5 };
-			int pid;
-
-			/*
-			 * We need to check whether the child is still alive
-			 * before and after the FUTEX_WAIT call. Before, in
-			 * case it just died but we still updated data->futex
-			 * to FUTEX_IN_CHILD. And after, in case it died while
-			 * we were waiting (and SIGCHLD woke us up, see the
-			 * IRQ handler in mmu.c).
-			 *
-			 * Either way, if PID is negative, then we have no
-			 * choice but to kill the task.
-			 */
-			pid = __READ_ONCE(mm_idp->pid);
-			if (pid < 0)
-				goto out_kill;
-
-			ret = syscall(__NR_futex, &data->futex,
-				      FUTEX_WAIT, FUTEX_IN_CHILD,
-				      &ts, NULL, 0);
-			if (ret < 0 && errno == ETIMEDOUT) {
-				/*
-				 * Bounded-wait backstop: on !SMP the
-				 * futex wake in mm_sigchld_irq() is
-				 * compiled out, so a dead stub is only
-				 * noticed here if a signal happens to
-				 * interrupt the wait (EINTR) and its
-				 * IRQ gets to run; without that rescue
-				 * the guest hangs here forever. Probe
-				 * the stub; only a genuinely dead one
-				 * breaks the wait, so this can never
-				 * fire spuriously.
-				 */
-				if (stub_is_dead(pid)) {
-					printk(UM_KERN_ERR "%s : stub pid %d died during futex wait\n",
-					       __func__, pid);
-					goto out_kill;
-				}
-				/* Alive but slow to answer; keep waiting. */
-				continue;
-			}
-			if (ret < 0 && errno != EINTR && errno != EAGAIN) {
-				printk(UM_KERN_ERR "%s : FUTEX_WAIT failed, errno = %d\n",
-				       __func__, errno);
-				goto out_kill;
-			}
-			/*
-			 * The acquire load pairs with the release stores of
-			 * the stub (and of mm_sigchld_irq()): what it wrote
-			 * before is visible after the loop.
-			 */
-		} while (__atomic_load_n(&data->futex, __ATOMIC_ACQUIRE) ==
-			 FUTEX_IN_CHILD);
+		if (stub_wait(st, 1))
+			goto out_kill;
 
 		if (__READ_ONCE(mm_idp->pid) < 0)
 			goto out_kill;
@@ -269,14 +293,12 @@ void wait_stub_done_seccomp(struct mm_id *mm_idp, int running, int wait_sigsys)
 		goto out_kill;
 	}
 
-	return;
+	return 0;
 
 out_kill:
-	printk(UM_KERN_ERR "%s : failed to wait for stub, pid = %d, errno = %d\n",
-	       __func__, mm_idp->pid, errno);
-	/* This is not true inside start_userspace */
-	if (current_mm_id() == mm_idp)
-		fatal_sigsegv();
+	printk(UM_KERN_ERR "%s : failed to wait for stub, pid = %d, tid = %d, errno = %d\n",
+	       __func__, mm_idp->pid, st->tid, errno);
+	return -1;
 }
 
 extern unsigned long current_stub_stack(void);
@@ -485,7 +507,7 @@ int syscall_cancel_nr = -1;
  */
 int start_userspace(struct mm_id *mm_id)
 {
-	struct stub_data *proc_data = (void *)mm_id->stack;
+	struct stub_data *proc_data = (void *)mm_id->main.stack;
 	struct tramp_data tramp_data = {
 		.stub_data = proc_data,
 	};
@@ -528,8 +550,14 @@ int start_userspace(struct mm_id *mm_id)
 		goto out_close;
 	}
 
+	mm_id->main.mm = mm_id;
+	mm_id->main.tid = mm_id->pid;
+
 	if (using_seccomp) {
-		wait_stub_done_seccomp(mm_id, 1, 1);
+		if (wait_stub_done_seccomp(&mm_id->main, 1, 1, 1)) {
+			err = -EIO;
+			goto out_kill;
+		}
 	} else {
 		do {
 			CATCH_EINTR(n = waitpid(mm_id->pid, &status,
@@ -661,7 +689,8 @@ void userspace(struct uml_pt_regs *regs)
 		current_mm_sync();
 
 		if (using_seccomp) {
-			struct stub_data *proc_data = (void *) mm_id->stack;
+			struct stub_thread *st = &mm_id->main;
+			struct stub_data *proc_data = (void *)st->stack;
 
 			err = set_stub_state(regs, proc_data, singlestepping());
 			if (err) {
@@ -675,22 +704,23 @@ void userspace(struct uml_pt_regs *regs)
 				panic("Programming error: Flag to only run syscalls in child was not cleared!");
 
 			/* Mark pending syscalls for flushing */
-			proc_data->syscall_data_len = mm_id->syscall_data_len;
+			proc_data->syscall_data_len = st->syscall_data_len;
 
-			wait_stub_done_seccomp(mm_id, 0, 0);
+			if (wait_stub_done_seccomp(st, 0, 0, 0))
+				fatal_sigsegv();
 
 			sig = proc_data->signal;
 
 			if (sig == SIGTRAP && proc_data->err != 0) {
 				printk(UM_KERN_ERR "%s - Error flushing stub syscalls",
 				       __func__);
-				syscall_stub_dump_error(mm_id);
-				mm_id->syscall_data_len = proc_data->err;
+				syscall_stub_dump_error(st);
+				st->syscall_data_len = proc_data->err;
 				fatal_sigsegv();
 			}
 
-			mm_id->syscall_data_len = 0;
-			mm_id->syscall_fd_num = 0;
+			st->syscall_data_len = 0;
+			st->syscall_fd_num = 0;
 
 			err = get_stub_state(regs, proc_data, NULL);
 			if (err) {
@@ -718,7 +748,7 @@ void userspace(struct uml_pt_regs *regs)
 			int pid = mm_id->pid;
 
 			/* Flush out any pending syscalls */
-			err = syscall_stub_flush(mm_id);
+			err = syscall_stub_flush(&mm_id->main);
 			if (err) {
 				if (err == -ENOMEM)
 					report_enomem();

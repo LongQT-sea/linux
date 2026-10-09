@@ -43,7 +43,7 @@ void exit_turnstile(struct mm_id *mm_id)
 
 unsigned long current_stub_stack(void)
 {
-	return this_runner()->mm_id.stack;
+	return this_runner()->mm_id.main.stack;
 }
 
 struct mm_id *current_mm_id(void)
@@ -67,9 +67,9 @@ static int __init nommu_start_runners(void)
 		r = &nommu_runners[cpu];
 		mutex_init(&r->turnstile);
 
-		r->mm_id.stack = __get_free_pages(GFP_KERNEL | __GFP_ZERO,
-						  ilog2(STUB_DATA_PAGES));
-		if (!r->mm_id.stack)
+		r->mm_id.main.stack = __get_free_pages(GFP_KERNEL | __GFP_ZERO,
+						       ilog2(STUB_DATA_PAGES));
+		if (!r->mm_id.main.stack)
 			panic("OOM allocating userspace stack for CPU %d", cpu);
 
 		err = start_userspace(&r->mm_id);
@@ -77,10 +77,10 @@ static int __init nommu_start_runners(void)
 			panic("userspace startup for CPU %d failed: %d",
 			      cpu, err);
 
-		map(&r->mm_id, uml_reserved, high_physmem - uml_reserved,
+		map(&r->mm_id.main, uml_reserved, high_physmem - uml_reserved,
 		    UM_PROT_READ | UM_PROT_WRITE | UM_PROT_EXEC, fd, offset);
 
-		err = syscall_stub_flush(&r->mm_id);
+		err = syscall_stub_flush(&r->mm_id.main);
 		if (err < 0)
 			panic("physmem map/flush failed for CPU%d: %d",
 			      cpu, err);

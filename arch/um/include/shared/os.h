@@ -285,14 +285,14 @@ extern long long os_persistent_clock_emulation(void);
 extern long long os_nsecs(void);
 
 /* skas/mem.c */
-int syscall_stub_flush(struct mm_id *mm_idp);
-struct stub_syscall *syscall_stub_alloc(struct mm_id *mm_idp);
-void syscall_stub_dump_error(struct mm_id *mm_idp);
+int syscall_stub_flush(struct stub_thread *st);
+struct stub_syscall *syscall_stub_alloc(struct stub_thread *st);
+void syscall_stub_dump_error(struct stub_thread *st);
 
-int map(struct mm_id *mm_idp, unsigned long virt,
+int map(struct stub_thread *st, unsigned long virt,
 	unsigned long len, int prot, int phys_fd,
 	unsigned long long offset);
-int unmap(struct mm_id *mm_idp, unsigned long addr, unsigned long len);
+int unmap(struct stub_thread *st, unsigned long addr, unsigned long len);
 
 /* skas/process.c */
 extern int is_skas_winch(int pid, int fd, void *data);
