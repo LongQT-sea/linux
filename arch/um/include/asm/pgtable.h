@@ -210,13 +210,14 @@ static inline pte_t pte_mkneedsync(pte_t pte)
 
 static inline void set_pte(pte_t *pteptr, pte_t pteval)
 {
-	pte_copy(*pteptr, pteval);
-
-	/* If it's a swap entry, it needs to be marked _PAGE_NEEDSYNC so
-	 * update_pte_range knows to unmap it.
+	/*
+	 * Always marked _PAGE_NEEDSYNC (also a swap entry, so that
+	 * update_pte_range knows to unmap it), and in a single store: the
+	 * page table walker on another CPU must not see the new value without
+	 * the bit, or it would skip the entry and lose the pending update of
+	 * the old one.
 	 */
-
-	*pteptr = pte_mkneedsync(*pteptr);
+	WRITE_ONCE(pte_val(*pteptr), pte_val(pteval) | _PAGE_NEEDSYNC);
 }
 
 #define PFN_PTE_SHIFT		PAGE_SHIFT
