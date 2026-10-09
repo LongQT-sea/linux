@@ -54,22 +54,37 @@ void get_mc_from_regs(struct uml_pt_regs *regs, mcontext_t *mc,
 		mc->pstate &= ~(1UL << 21);
 }
 
-/* Locate the fpsimd record (header included) in the sigframe's sigcontext */
+/*
+ * Locate the fpsimd record (header included) in the sigframe's sigcontext.
+ * Every record header is read once and must lie within the stub's signal
+ * stack: other threads of the stub process may run userspace and write to
+ * the signal frame meanwhile.
+ */
 static struct um_fpsimd_record *get_fpstate(struct stub_data *data,
 					    mcontext_t *mcontext)
 {
+	void *end = (void *)data->sigstack + sizeof(data->sigstack);
+	void *p = mcontext->__reserved;
 	struct { __u32 magic; __u32 size; } *h;
+	__u32 magic, size;
 
-	for (h = (void *)mcontext->__reserved; h->magic;
-	     h = (void *)h + h->size) {
-		if (h->magic == FPSIMD_MAGIC) {
-			if ((void *)h + UM_FPSIMD_RECORD_SIZE >
-			    (void *)data->sigstack + sizeof(data->sigstack))
+	for (;;) {
+		if (p + sizeof(*h) > end)
+			return NULL;
+		h = p;
+		magic = __atomic_load_n(&h->magic, __ATOMIC_RELAXED);
+		size = __atomic_load_n(&h->size, __ATOMIC_RELAXED);
+		if (!magic)
+			return NULL;
+		if (magic == FPSIMD_MAGIC) {
+			if (p + UM_FPSIMD_RECORD_SIZE > end)
 				return NULL;
-			return (void *)h;
+			return p;
 		}
+		if (size < sizeof(*h) || size > end - p)
+			return NULL;
+		p += size;
 	}
-	return NULL;
 }
 
 int get_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
@@ -78,9 +93,17 @@ int get_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	struct um_fpsimd_record *sc_fp;
 	struct um_fpsimd_state *fp;
 	mcontext_t *mcontext;
+	unsigned short mctx_offset =
+		__atomic_load_n(&data->mctx_offset, __ATOMIC_RELAXED);
 
-	/* mctx_offset is verified by wait_stub_done_seccomp */
-	mcontext = (void *)&data->sigstack[data->mctx_offset];
+	/*
+	 * Other threads of the stub process may run userspace and write to
+	 * the stub data meanwhile, read the offset only once.
+	 */
+	if (sizeof(data->sigstack) < sizeof(*mcontext) ||
+	    mctx_offset > sizeof(data->sigstack) - sizeof(*mcontext))
+		return -EINVAL;
+	mcontext = (void *)&data->sigstack[mctx_offset];
 
 	get_regs_from_mc(regs, mcontext);
 
@@ -128,8 +151,8 @@ int set_stub_state(struct uml_pt_regs *regs, struct stub_data *data,
 	struct um_fpsimd_state *fp;
 	mcontext_t *mcontext;
 
-	/* mctx_offset is verified by wait_stub_done_seccomp */
-	mcontext = (void *)&data->sigstack[data->mctx_offset];
+	mcontext = (void *)&data->sigstack[__atomic_load_n(&data->mctx_offset,
+							  __ATOMIC_RELAXED)];
 
 	if ((unsigned long)mcontext < (unsigned long)data->sigstack ||
 	    (unsigned long)mcontext >
