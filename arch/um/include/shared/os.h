@@ -297,6 +297,7 @@ int unmap(struct stub_thread *st, unsigned long addr, unsigned long len);
 extern int is_skas_winch(int pid, int fd, void *data);
 extern int start_userspace(struct mm_id *mm_id);
 void stub_thread_kick(struct stub_thread *st);
+void stub_thread_stop(struct stub_thread *st);
 int stub_kill(struct mm_id *mm_id);
 extern void userspace(struct uml_pt_regs *regs);
 extern void new_thread(void *stack, jmp_buf *buf, void (*handler)(void));

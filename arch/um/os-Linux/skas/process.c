@@ -730,6 +730,40 @@ void stub_thread_kick(struct stub_thread *st)
 	syscall(__NR_tgkill, st->mm->pid, st->tid, SIGALRM);
 }
 
+/*
+ * Interrupt a stub thread that may be running userspace, and wait until it is
+ * back in its signal handler. Called from an IPI handler on the CPU that runs
+ * the thread, which may have interrupted any step of running it.
+ */
+void stub_thread_stop(struct stub_thread *st)
+{
+	struct stub_data *data = (void *)st->stack;
+
+	/*
+	 * Being killed (possibly by this very CPU, interrupted in stub_kill())
+	 * or dead: its threads run no userspace that would need stopping.
+	 */
+	if (__READ_ONCE(st->mm->pid) <= 0)
+		return;
+
+	stub_thread_kick(st);
+
+	/*
+	 * stub_wake() may have been interrupted between setting
+	 * FUTEX_IN_CHILD and waking the thread up; nothing would wake it
+	 * until this returns.
+	 */
+	if (__atomic_load_n(&data->futex, __ATOMIC_ACQUIRE) == FUTEX_IN_CHILD)
+		syscall(__NR_futex, &data->futex, FUTEX_WAKE, 1, NULL, NULL, 0);
+
+	/*
+	 * A thread that is not running stays in its handler (FUTEX_IN_KERN);
+	 * one that runs traps on the kick. If the stub process died or does
+	 * not respond, the CPU's own wait for it deals with that.
+	 */
+	stub_wait(st, 1, 1);
+}
+
 static int unscheduled_userspace_iterations;
 extern unsigned long tt_extra_sched_jiffies;
 

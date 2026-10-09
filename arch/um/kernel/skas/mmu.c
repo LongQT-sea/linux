@@ -95,6 +95,24 @@ void um_kick_userspace(void)
 		stub_thread_kick(st);
 }
 
+/*
+ * Like um_kick_userspace(), and wait until the userspace code running on this
+ * CPU (if any) is back in the kernel: all of its memory accesses until then
+ * are visible to this CPU, and it passed a context synchronisation (the trap).
+ */
+void um_stop_userspace(void)
+{
+	struct stub_thread *st = __this_cpu_read(running_stub);
+
+	if (!st)
+		return;
+
+	if (using_seccomp)
+		stub_thread_stop(st);
+	else
+		stub_thread_kick(st);
+}
+
 /**
  * enter_userspace() - prepare to run userspace of @mm_id on this CPU
  * @mm_id: The stub process

@@ -66,7 +66,16 @@ static void ipi_handler(int vector, struct uml_pt_regs *regs)
 
 	irq_enter();
 
-	um_kick_userspace();
+	/*
+	 * Functions run by IPIs may need to act as a barrier for the userspace
+	 * code that runs on this CPU, like ipi_mb() of membarrier(). That
+	 * code runs on a thread of its stub process, on another host CPU, so
+	 * a barrier here would order nothing for it: wait until it trapped.
+	 */
+	if (vector == UML_IPI_CALL_SINGLE || vector == UML_IPI_CALL)
+		um_stop_userspace();
+	else
+		um_kick_userspace();
 
 	switch (vector) {
 	case UML_IPI_RES:

@@ -33,6 +33,7 @@ extern void handle_syscall(struct uml_pt_regs *regs);
 extern unsigned long current_stub_stack(void);
 extern struct mm_id *current_mm_id(void);
 void um_kick_userspace(void);
+void um_stop_userspace(void);
 void initial_jmpbuf_lock(void);
 void initial_jmpbuf_unlock(void);
 
