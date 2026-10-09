@@ -41,43 +41,6 @@ void exit_turnstile(struct mm_id *mm_id)
 	mutex_unlock(__get_turnstile(mm_id));
 }
 
-static void stub_thread_dead(struct stub_thread *st)
-{
-	struct stub_data *stub_data = (void *)st->stack;
-
-	/* A waiter that sees this also sees that the stub process is dead */
-	smp_store_release(&stub_data->futex, FUTEX_IN_KERN);
-#if IS_ENABLED(CONFIG_SMP)
-	os_futex_wake(&stub_data->futex);
-#else
-	/*
-	 * On !SMP the wake is skipped: a futex waiter in stub_wait() is
-	 * rescued by a signal interrupting its wait (EINTR) or by its
-	 * periodic liveness check, which turns a dead stub into a loud
-	 * failure either way.
-	 */
-#endif
-}
-
-/*
- * Kill the stub process and wait for it to be gone, and wake up anybody
- * waiting for one of its threads. Its tasks die when they next use it.
- */
-void um_stub_kill(struct mm_id *mm_id)
-{
-	int pid;
-
-	/* This returns once the process is gone, also if another CPU killed it */
-	pid = stub_kill(mm_id);
-	if (!pid)
-		return;
-
-	pr_err("Killed stub process %d, its host mappings were inconsistent\n",
-	       pid);
-
-	stub_thread_dead(&mm_id->main);
-}
-
 /* The stub thread that runs (or is about to run) userspace on this CPU */
 static DEFINE_PER_CPU(struct stub_thread *, running_stub);
 
@@ -113,6 +76,168 @@ void um_stop_userspace(void)
 		stub_thread_kick(st);
 }
 
+static void stub_thread_dead(struct stub_thread *st)
+{
+	struct stub_data *stub_data = (void *)st->stack;
+
+	/* A waiter that sees this also sees that the stub process is dead */
+	smp_store_release(&stub_data->futex, FUTEX_IN_KERN);
+#if IS_ENABLED(CONFIG_SMP)
+	os_futex_wake(&stub_data->futex);
+#else
+	/*
+	 * On !SMP the wake is skipped: a futex waiter in stub_wait() is
+	 * rescued by a signal interrupting its wait (EINTR) or by its
+	 * periodic liveness check, which turns a dead stub into a loud
+	 * failure either way.
+	 */
+#endif
+}
+
+/*
+ * Kill the stub process and wait for it to be gone, and wake up anybody
+ * waiting for one of its threads. Its tasks die when they next use it.
+ */
+void um_stub_kill(struct mm_id *mm_id)
+{
+	int __maybe_unused cpu;
+	int pid;
+
+	/* This returns once the process is gone, also if another CPU killed it */
+	pid = stub_kill(mm_id);
+	if (!pid)
+		return;
+
+	pr_err("Killed stub process %d, its host mappings were inconsistent\n",
+	       pid);
+
+	stub_thread_dead(&mm_id->main);
+#ifdef CONFIG_UML_MT_STUB
+	for (cpu = 0; cpu < ARRAY_SIZE(mm_id->workers); cpu++) {
+		struct stub_thread *st = READ_ONCE(mm_id->workers[cpu]);
+
+		if (st)
+			stub_thread_dead(st);
+	}
+#endif
+}
+
+static void free_stub_thread_data(struct stub_thread *st)
+{
+	free_pages(st->stack, get_order(STUB_DATA_PAGES * UM_KERN_PAGE_SIZE));
+}
+
+#ifdef CONFIG_UML_MT_STUB
+static bool mt_stub __ro_after_init;
+
+static int __init init_mt_stub(void)
+{
+	mt_stub = using_seccomp && num_possible_cpus() > 1;
+	return 0;
+}
+early_initcall(init_mt_stub);
+
+static bool use_mt_stub(void)
+{
+	return mt_stub;
+}
+
+static struct stub_thread *alloc_stub_thread(struct mm_id *mm_id, int cpu)
+{
+	struct stub_thread *st;
+
+	st = kzalloc_obj(*st, GFP_KERNEL);
+	if (!st)
+		return NULL;
+
+	st->stack = __get_free_pages(GFP_KERNEL | __GFP_ZERO,
+				     get_order(STUB_DATA_PAGES * UM_KERN_PAGE_SIZE));
+	if (!st->stack) {
+		kfree(st);
+		return NULL;
+	}
+
+	st->mm = mm_id;
+	st->slot = 1 + cpu;
+
+	return st;
+}
+
+static void free_stub_thread(struct stub_thread *st)
+{
+	free_stub_thread_data(st);
+	kfree(st);
+}
+
+/*
+ * Return the stub thread that runs userspace of @mm_id on this CPU, creating
+ * it if needed. Called and returns with preemption disabled, but may enable
+ * it in between, so the CPU can change.
+ */
+static struct stub_thread *get_cpu_stub_thread(struct mm_id *mm_id)
+{
+	struct mm_context *ctx = container_of(mm_id, struct mm_context, id);
+	struct stub_thread *st, *new = NULL;
+	int cpu, err;
+
+	for (;;) {
+		cpu = smp_processor_id();
+		st = READ_ONCE(mm_id->workers[cpu]);
+		if (st)
+			break;
+
+		/* Only this CPU creates its own thread, preemption is off */
+		if (new && new->slot == 1 + cpu) {
+			/*
+			 * The thread that exec()ed the stub creates the new
+			 * one; it is shared by all CPUs.
+			 */
+			scoped_guard(spinlock, &ctx->sync_tlb_lock) {
+				err = start_stub_thread(new);
+				/*
+				 * The data pages may be mapped in the stub,
+				 * so it must go before they are freed.
+				 */
+				if (err)
+					um_stub_kill(mm_id);
+			}
+			if (err) {
+				pr_err("%s: failed to start stub thread for CPU %d: %d\n",
+				       __func__, cpu, err);
+				free_stub_thread(new);
+				return NULL;
+			}
+			/* Paired with READ_ONCE() of others walking workers[] */
+			smp_store_release(&mm_id->workers[cpu], new);
+			return new;
+		}
+
+		preempt_enable();
+		if (new)
+			free_stub_thread(new);
+		new = alloc_stub_thread(mm_id, cpu);
+		preempt_disable();
+		if (!new)
+			return NULL;
+	}
+
+	if (new)
+		free_stub_thread(new);
+
+	return st;
+}
+#else
+static bool use_mt_stub(void)
+{
+	return false;
+}
+
+static struct stub_thread *get_cpu_stub_thread(struct mm_id *mm_id)
+{
+	return NULL;
+}
+#endif
+
 /**
  * enter_userspace() - prepare to run userspace of @mm_id on this CPU
  * @mm_id: The stub process
@@ -131,7 +256,7 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 {
 	struct mm_context *ctx = container_of(mm_id, struct mm_context, id);
 	struct mm_struct *mm = container_of(ctx, struct mm_struct, context);
-	struct stub_thread *st = &mm_id->main;
+	struct stub_thread *st;
 
 	/*
 	 * At any given time, only one CPU thread can enter the turnstile to
@@ -141,6 +266,14 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 	enter_turnstile(mm_id);
 
 	preempt_disable();
+
+	if (!use_mt_stub()) {
+		st = &mm_id->main;
+	} else {
+		st = get_cpu_stub_thread(mm_id);
+		if (!st)
+			goto fail;
+	}
 
 	um_tlb_sync(mm, st);
 
@@ -166,16 +299,22 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 		stub_thread_kick(st);
 
 	return st;
+
+fail:
+	preempt_enable();
+	exit_turnstile(mm_id);
+	return NULL;
 }
 
 /*
  * Running userspace failed after enter_userspace(). Requests queued to @st
  * may not have run although the page tables are marked as synced, so the
- * stub process cannot be trusted anymore.
+ * stub process cannot be trusted anymore (with worker threads, other threads
+ * of it may still run userspace).
  */
 void userspace_failed(struct mm_id *mm_id, struct stub_thread *st)
 {
-	if (st->syscall_data_len)
+	if (use_mt_stub() || st->syscall_data_len)
 		um_stub_kill(mm_id);
 
 	st->syscall_data_len = 0;
@@ -231,7 +370,10 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 	if (ret < 0)
 		goto out_free;
 
-	/* Ensure the new MM is clean and nothing unwanted is mapped */
+	/*
+	 * Ensure the new MM is clean and nothing unwanted is mapped. With
+	 * worker threads this is done before the first one is created.
+	 */
 	unmap(&new_id->main, 0, STUB_START);
 
 	return 0;
@@ -247,6 +389,7 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 void destroy_context(struct mm_struct *mm)
 {
 	struct mm_context *mmu = &mm->context;
+	int __maybe_unused cpu;
 
 	/*
 	 * If init_new_context wasn't called, this will be
@@ -273,12 +416,19 @@ void destroy_context(struct mm_struct *mm)
 	if (using_seccomp && mmu->id.sock)
 		os_close_file(mmu->id.sock);
 
-	free_pages(mmu->id.main.stack, get_order(STUB_DATA_PAGES * UM_KERN_PAGE_SIZE));
+	free_stub_thread_data(&mmu->id.main);
+#ifdef CONFIG_UML_MT_STUB
+	for (cpu = 0; cpu < ARRAY_SIZE(mmu->id.workers); cpu++) {
+		if (mmu->id.workers[cpu])
+			free_stub_thread(mmu->id.workers[cpu]);
+	}
+#endif
 }
 
 static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 {
 	struct mm_context *mm_context;
+	int __maybe_unused cpu;
 	pid_t pid;
 
 	guard(spinlock)(&mm_list_lock);
@@ -298,6 +448,15 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				WRITE_ONCE(mm_context->id.pid, -1);
 
 				stub_thread_dead(&mm_context->id.main);
+#ifdef CONFIG_UML_MT_STUB
+				for (cpu = 0; cpu < ARRAY_SIZE(mm_context->id.workers); cpu++) {
+					struct stub_thread *st;
+
+					st = READ_ONCE(mm_context->id.workers[cpu]);
+					if (st)
+						stub_thread_dead(st);
+				}
+#endif
 
 				/*
 				 * NOTE: Currently executing syscalls by

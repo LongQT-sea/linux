@@ -287,6 +287,7 @@ extern long long os_nsecs(void);
 int syscall_stub_flush(struct stub_thread *st);
 struct stub_syscall *syscall_stub_alloc(struct stub_thread *st);
 void syscall_stub_dump_error(struct stub_thread *st);
+void stub_thread_clone(struct stub_thread *st, int slot);
 
 int map(struct stub_thread *st, unsigned long virt,
 	unsigned long len, int prot, int phys_fd,
@@ -296,6 +297,7 @@ int unmap(struct stub_thread *st, unsigned long addr, unsigned long len);
 /* skas/process.c */
 extern int is_skas_winch(int pid, int fd, void *data);
 extern int start_userspace(struct mm_id *mm_id);
+int start_stub_thread(struct stub_thread *st);
 void stub_thread_kick(struct stub_thread *st);
 void stub_thread_stop(struct stub_thread *st);
 int stub_kill(struct mm_id *mm_id);

@@ -146,6 +146,30 @@ static __always_inline void *get_stub_data(void)
 }
 
 /*
+ * Create a thread in the stub process that starts on @stack and calls @fn,
+ * which must not return.  Returns the clone() result in the parent.
+ */
+#define stub_clone_thread(flags, stack, fn)				\
+({									\
+	long __ret;							\
+	register long __r10 asm("r10") = 0;				\
+	register long __r8 asm("r8") = 0;				\
+									\
+	asm volatile (							\
+		__syscall "\n\t"					\
+		"testq %%rax, %%rax\n\t"				\
+		"jnz 1f\n\t"						\
+		"call %P[func]\n\t"					\
+		"ud2\n"							\
+		"1:"							\
+		: "=a" (__ret)						\
+		: "0" (__NR_clone), "D" (flags), "S" (stack), "d" (0),	\
+		  "r" (__r10), "r" (__r8), [func] "i" (fn)		\
+		: __syscall_clobber);					\
+	__ret;								\
+})
+
+/*
  * Entry instructions of the stub_exe binary, emitted from file-scope
  * asm in stub_exe.c: move the stack pointer down past the future stub
  * mappings, then call real_init().

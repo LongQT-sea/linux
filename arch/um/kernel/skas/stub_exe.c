@@ -6,7 +6,21 @@
 #include <stub-data.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <linux/sched.h>
 #include <generated/asm-offsets.h>
+
+/*
+ * Jump offset from the n-th entry of the list of permitted syscalls in the
+ * seccomp filter to the final "allow" instruction.
+ */
+#ifdef CONFIG_UML_MT_STUB
+#define STUB_FILTER_NR_ALLOWED 10
+#define STUB_FILTER_TAIL 4
+#else
+#define STUB_FILTER_NR_ALLOWED 7
+#define STUB_FILTER_TAIL 1
+#endif
+#define STUB_FILTER_ALLOW(n) (STUB_FILTER_NR_ALLOWED - 1 - (n) + STUB_FILTER_TAIL)
 
 static noinline void __attribute__((used)) real_init(void)
 {
@@ -170,26 +184,42 @@ static noinline void __attribute__((used)) real_init(void)
 			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 				 offsetof(struct seccomp_data, nr)),
 
-			/* [10-16] Check against permitted syscalls */
+			/* [10-] Check against permitted syscalls */
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_futex,
-				 7, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,__NR_recvmsg,
-				 6, 0),
-			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,__NR_close,
-				 5, 0),
+				 STUB_FILTER_ALLOW(0), 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_recvmsg,
+				 STUB_FILTER_ALLOW(1), 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_close,
+				 STUB_FILTER_ALLOW(2), 0),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_MMAP_NR,
-				 4, 0),
+				 STUB_FILTER_ALLOW(3), 0),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_munmap,
-				 3, 0),
+				 STUB_FILTER_ALLOW(4), 0),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_TLS_SYSCALL_NR,
-				 2, 0),
+				 STUB_FILTER_ALLOW(5), 0),
 			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_rt_sigreturn,
-				 1, 0),
+				 STUB_FILTER_ALLOW(6), 0),
+#ifdef CONFIG_UML_MT_STUB
+			/* Used by new threads, see stub_worker_start() */
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sigaltstack,
+				 STUB_FILTER_ALLOW(7), 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_rt_sigprocmask,
+				 STUB_FILTER_ALLOW(8), 0),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_gettid,
+				 STUB_FILTER_ALLOW(9), 0),
 
-			/* [17] Not one of the permitted syscalls */
+			/* clone() is only permitted to create a thread */
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 2),
+			BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+				 offsetof(struct seccomp_data, args[0])),
+			BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STUB_CLONE_FLAGS,
+				 1, 0),
+#endif
+
+			/* Not one of the permitted syscalls */
 			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 
-			/* [18] Permitted call for the stub */
+			/* Permitted call for the stub */
 			BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 		};
 		struct sock_fprog prog = {

@@ -32,7 +32,15 @@
 #define STUB_DATA_PAGES (1 + UM_STUB_SIGSTACK_PAGES)
 #define STUB_SLOT_SIZE (STUB_DATA_PAGES * UM_KERN_PAGE_SIZE)
 
+/*
+ * With CONFIG_UML_MT_STUB, slot 0 belongs to the thread that exec()ed the
+ * stub, and slot 1 + N to the thread that runs userspace on CPU N.
+ */
+#ifdef CONFIG_UML_MT_STUB
+#define STUB_SLOTS (1 + CONFIG_NR_CPUS)
+#else
 #define STUB_SLOTS 1
+#endif
 #define STUB_SLOT_DATA(slot) (STUB_DATA + (slot) * STUB_SLOT_SIZE)
 
 #define STUB_SIZE (UM_KERN_PAGE_SIZE + STUB_SLOTS * STUB_SLOT_SIZE)

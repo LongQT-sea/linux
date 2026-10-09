@@ -4,6 +4,7 @@
  */
 
 #include <sysdep/stub.h>
+#include <linux/sched.h>
 
 #include <linux/futex.h>
 #include <sys/socket.h>
@@ -67,6 +68,22 @@ static __always_inline int syscall_handler(int fd_map[STUB_MAX_FDS])
 				return -1;
 			}
 			break;
+#ifdef CONFIG_UML_MT_STUB
+		case STUB_SYSCALL_CLONE:
+			/*
+			 * New thread whose data area is at mem.addr; it starts
+			 * on the top of its own sigstack.
+			 */
+			res = stub_clone_thread(STUB_CLONE_FLAGS,
+						sc->mem.addr + sc->mem.length,
+						stub_worker_start);
+			if ((long)res < 0) {
+				d->err = res;
+				d->syscall_data_len = i;
+				return -1;
+			}
+			break;
+#endif
 		default:
 			d->err = -95; /* EOPNOTSUPP */
 			d->syscall_data_len = i;
@@ -182,6 +199,40 @@ restart_wait:
 	/* Return so that the host modified mcontext is restored. */
 	stub_signal_return(info);
 }
+
+#ifdef CONFIG_UML_MT_STUB
+/*
+ * Entry point of a thread created by STUB_SYSCALL_CLONE. It runs on its own
+ * sigstack with all signals blocked (inherited from the creating thread,
+ * which is in its signal handler). Set up the sigaltstack, unblock signals
+ * and trap, so the kernel finds it waiting in stub_signal_interrupt() with a
+ * signal frame it can fill in to run userspace.
+ */
+void __section(".__syscall_stub") __noreturn
+stub_worker_start(void)
+{
+	struct stub_data *d = get_stub_data();
+	struct {
+		void  *ss_sp;
+		int    ss_flags;
+		size_t ss_size;
+	} stack = {
+		.ss_sp = d->sigstack,
+		.ss_size = sizeof(d->sigstack),
+	};
+	unsigned long long mask = 0;
+
+	d->tid = stub_syscall0(__NR_gettid);
+	/* Tell the kernel if this fails, the thread is unusable then */
+	if (stub_syscall2(__NR_sigaltstack, (unsigned long)&stack, 0))
+		d->tid = -1;
+	stub_syscall4(__NR_rt_sigprocmask, SIG_SETMASK, (unsigned long)&mask,
+		      0, sizeof(mask));
+
+	for (;;)
+		trap_myself();
+}
+#endif
 
 void __section(".__syscall_stub")
 stub_signal_restorer(void)
