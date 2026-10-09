@@ -32,7 +32,7 @@ static int do_set_thread_area(struct task_struct* task, struct user_desc *info)
 
 	if (using_seccomp) {
 		int idx = info->entry_number - host_gdt_entry_tls_min;
-		struct stub_data *data = (void *)task->mm->context.id.stack;
+		struct stub_data *data = (void *)task->mm->context.id.main.stack;
 
 		data->arch_data.tls[idx] = *info;
 		data->arch_data.sync |= BIT(idx);

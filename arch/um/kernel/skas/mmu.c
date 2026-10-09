@@ -46,7 +46,7 @@ unsigned long current_stub_stack(void)
 	if (current->mm == NULL)
 		return 0;
 
-	return current->mm->context.id.stack;
+	return current->mm->context.id.main.stack;
 }
 
 struct mm_id *current_mm_id(void)
@@ -78,9 +78,8 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 	if (stack == 0)
 		goto out;
 
-	new_id->stack = stack;
-	new_id->syscall_data_len = 0;
-	new_id->syscall_fd_num = 0;
+	memset(new_id, 0, sizeof(*new_id));
+	new_id->main.stack = stack;
 
 	scoped_guard(spinlock_irqsave, &mm_list_lock) {
 		/* Insert into list, used for lookups when the child dies */
@@ -92,14 +91,14 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 		goto out_free;
 
 	/* Ensure the new MM is clean and nothing unwanted is mapped */
-	unmap(new_id, 0, STUB_START);
+	unmap(&new_id->main, 0, STUB_START);
 
 	return 0;
 
  out_free:
 	scoped_guard(spinlock_irqsave, &mm_list_lock)
 		list_del(&mm->context.list);
-	free_pages(new_id->stack, ilog2(STUB_DATA_PAGES));
+	free_pages(new_id->main.stack, ilog2(STUB_DATA_PAGES));
  out:
 	return ret;
 }
@@ -133,7 +132,7 @@ void destroy_context(struct mm_struct *mm)
 	if (using_seccomp && mmu->id.sock)
 		os_close_file(mmu->id.sock);
 
-	free_pages(mmu->id.stack, ilog2(STUB_DATA_PAGES));
+	free_pages(mmu->id.main.stack, ilog2(STUB_DATA_PAGES));
 }
 
 static irqreturn_t mm_sigchld_irq(int irq, void* dev)
@@ -158,7 +157,7 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
 				/* Marks the MM as dead */
 				mm_context->id.pid = -1;
 
-				stub_data = (void *)mm_context->id.stack;
+				stub_data = (void *)mm_context->id.main.stack;
 				stub_data->futex = FUTEX_IN_KERN;
 #if IS_ENABLED(CONFIG_SMP)
 				os_futex_wake(&stub_data->futex);

@@ -10,15 +10,31 @@
 
 #define STUB_MAX_FDS 4
 
-struct mm_id {
-	int pid;
+struct mm_id;
+
+/*
+ * A host thread of a stub process, with its data area (struct stub_data)
+ * and its queue of pending mmap/munmap requests.
+ */
+struct stub_thread {
+	struct mm_id *mm;
+	int tid;
 	unsigned long stack;
 	int syscall_data_len;
 
 	/* Only used with SECCOMP mode */
-	int sock;
 	int syscall_fd_num;
 	int syscall_fd_map[STUB_MAX_FDS];
+};
+
+struct mm_id {
+	int pid;
+
+	/* Only used with SECCOMP mode */
+	int sock;
+
+	/* The thread that exec()ed the stub */
+	struct stub_thread main;
 };
 
 struct mutex *__get_turnstile(struct mm_id *mm_id);

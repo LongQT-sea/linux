@@ -16,16 +16,16 @@
 #include <kern_util.h>
 
 struct vm_ops {
-	struct mm_id *mm_idp;
+	struct stub_thread *st;
 
-	int (*mmap)(struct mm_id *mm_idp,
+	int (*mmap)(struct stub_thread *st,
 		    unsigned long virt, unsigned long len, int prot,
 		    int phys_fd, unsigned long long offset);
-	int (*unmap)(struct mm_id *mm_idp,
+	int (*unmap)(struct stub_thread *st,
 		     unsigned long virt, unsigned long len);
 };
 
-static int kern_map(struct mm_id *mm_idp,
+static int kern_map(struct stub_thread *st,
 		    unsigned long virt, unsigned long len, int prot,
 		    int phys_fd, unsigned long long offset)
 {
@@ -34,7 +34,7 @@ static int kern_map(struct mm_id *mm_idp,
 			     prot & UM_PROT_EXEC);
 }
 
-static int kern_unmap(struct mm_id *mm_idp,
+static int kern_unmap(struct stub_thread *st,
 		      unsigned long virt, unsigned long len)
 {
 	return os_unmap_memory((void *)virt, len);
@@ -98,10 +98,10 @@ static inline int update_pte_range(pmd_t pmdval, unsigned long addr,
 			       (w ? UM_PROT_WRITE : 0) |
 			       (x ? UM_PROT_EXEC : 0);
 
-			ret = ops->mmap(ops->mm_idp, addr, PAGE_SIZE,
+			ret = ops->mmap(ops->st, addr, PAGE_SIZE,
 					prot, fd, offset);
 		} else if (!force)
-			ret = ops->unmap(ops->mm_idp, addr, PAGE_SIZE);
+			ret = ops->unmap(ops->st, addr, PAGE_SIZE);
 
 		if (pte_needsync(val))
 			entry_mkuptodate(&pte_val(*pte), pte_val(val));
@@ -168,7 +168,7 @@ static inline int update_pmd_range(pud_t *pudp, pud_t pudval,
 
 		next = pmd_addr_end(addr, end);
 		if (sync && !force)
-			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+			ret = ops->unmap(ops->st, addr, next - addr);
 		if (!ret && pmd_present(val))
 			ret = update_pte_range(val, addr, next, ops,
 					       force || sync);
@@ -193,7 +193,7 @@ static inline int update_pud_range(p4d_t *p4dp, p4d_t p4dval,
 
 		next = pud_addr_end(addr, end);
 		if (sync && !force)
-			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+			ret = ops->unmap(ops->st, addr, next - addr);
 		if (!ret && pud_present(val))
 			ret = update_pmd_range(pud, val, addr, next, ops,
 					       force || sync);
@@ -218,7 +218,7 @@ static inline int update_p4d_range(pgd_t *pgd, unsigned long addr,
 
 		next = p4d_addr_end(addr, end);
 		if (sync)
-			ret = ops->unmap(ops->mm_idp, addr, next - addr);
+			ret = ops->unmap(ops->st, addr, next - addr);
 		if (!ret && p4d_present(val))
 			ret = update_pud_range(p4d, val, addr, next, ops, sync);
 		if (sync)
@@ -242,7 +242,7 @@ static int __um_tlb_sync(struct mm_struct *mm, struct vm_ops *ops)
 		next = pgd_addr_end(addr, mm->context.sync_tlb_range_to);
 		if (!pgd_present(*pgd)) {
 			if (pgd_needsync(*pgd)) {
-				ret = ops->unmap(ops->mm_idp, addr,
+				ret = ops->unmap(ops->st, addr,
 						 next - addr);
 				pgd_mkuptodate(*pgd);
 			}
@@ -265,7 +265,7 @@ int um_tlb_sync(struct mm_struct *mm)
 	struct vm_ops ops;
 
 	if (mm != &init_mm) {
-		ops.mm_idp = &mm->context.id;
+		ops.st = &mm->context.id.main;
 		ops.mmap = map;
 		ops.unmap = unmap;
 
@@ -273,7 +273,7 @@ int um_tlb_sync(struct mm_struct *mm)
 		return __um_tlb_sync(mm, &ops);
 	}
 
-	ops.mm_idp = NULL;
+	ops.st = NULL;
 	ops.mmap = kern_map;
 	ops.unmap = kern_unmap;
 
