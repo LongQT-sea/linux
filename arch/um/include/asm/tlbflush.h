@@ -34,6 +34,10 @@
 
 struct stub_thread;
 extern int um_tlb_sync(struct mm_struct *mm, struct stub_thread *st);
+int um_tlb_sync_locked(struct mm_struct *mm, struct stub_thread *st);
+void um_tlb_flush_range(struct mm_struct *mm, unsigned long start,
+			unsigned long end);
+bool um_mm_running_elsewhere(struct mm_struct *mm);
 
 extern void flush_tlb_all(void);
 extern void flush_tlb_mm(struct mm_struct *mm);
@@ -41,13 +45,13 @@ extern void flush_tlb_mm(struct mm_struct *mm);
 static inline void flush_tlb_page(struct vm_area_struct *vma,
 				  unsigned long address)
 {
-	um_tlb_mark_sync(vma->vm_mm, address, address + PAGE_SIZE);
+	um_tlb_flush_range(vma->vm_mm, address, address + PAGE_SIZE);
 }
 
 static inline void flush_tlb_range(struct vm_area_struct *vma,
 				   unsigned long start, unsigned long end)
 {
-	um_tlb_mark_sync(vma->vm_mm, start, end);
+	um_tlb_flush_range(vma->vm_mm, start, end);
 }
 
 static inline void flush_tlb_kernel_range(unsigned long start,

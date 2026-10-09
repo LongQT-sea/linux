@@ -238,15 +238,24 @@ static struct stub_thread *get_cpu_stub_thread(struct mm_id *mm_id)
 }
 #endif
 
+bool um_mm_running_elsewhere(struct mm_struct *mm)
+{
+	return use_mt_stub() && !cpumask_empty(mm_cpumask(mm));
+}
+
 /**
  * enter_userspace() - prepare to run userspace of @mm_id on this CPU
  * @mm_id: The stub process
  *
  * Picks the stub thread to run on, and replays pending page table changes
- * by queueing them to that thread. They are executed when the thread is
- * woken up to run userspace, so the CPU must not be preempted in between:
- * another task could change the page tables meanwhile, and the stale queued
- * requests would then be applied after its TLB flush.
+ * by queueing them to that thread.
+ *
+ * With worker threads (CONFIG_UML_MT_STUB), the queued changes are only
+ * executed when the thread is woken up to run userspace. Until they are
+ * done, a TLB flush on another CPU must not update the host mappings (it
+ * could be undone by a stale queued mmap), so sync_tlb_lock stays held
+ * until userspace_running(). This CPU is in mm_cpumask() from here until
+ * leave_userspace(), so flushes on other CPUs update the host right away.
  *
  * Return: the stub thread to run on, or NULL if that failed (the caller must
  * then kill the task). On success, preemption is disabled until
@@ -269,13 +278,17 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 
 	if (!use_mt_stub()) {
 		st = &mm_id->main;
+		um_tlb_sync(mm, st);
 	} else {
 		st = get_cpu_stub_thread(mm_id);
 		if (!st)
 			goto fail;
-	}
 
-	um_tlb_sync(mm, st);
+		spin_lock(&ctx->sync_tlb_lock);
+		st->sync_locked = 1;
+		um_tlb_sync_locked(mm, st);
+		cpumask_set_cpu(smp_processor_id(), mm_cpumask(mm));
+	}
 
 	/* A failed flush of queued syscalls leaves the host out of sync */
 	if (st->syscall_data_len < 0) {
@@ -284,7 +297,6 @@ struct stub_thread *enter_userspace(struct mm_id *mm_id)
 		return NULL;
 	}
 
-	/* Not irq-safe this_cpu_write(), that costs host syscalls on SMP */
 	__this_cpu_write(running_stub, st);
 	/* An IPI handler on this CPU sees it from here on */
 	barrier();
@@ -321,9 +333,29 @@ void userspace_failed(struct mm_id *mm_id, struct stub_thread *st)
 	st->syscall_fd_num = 0;
 }
 
+/*
+ * Called once the stub thread of enter_userspace() executed its queued
+ * syscalls (or has none) and so runs userspace.
+ */
+void userspace_running(struct mm_id *mm_id, struct stub_thread *st)
+{
+	struct mm_context *ctx = container_of(mm_id, struct mm_context, id);
+
+	if (st->sync_locked) {
+		st->sync_locked = 0;
+		spin_unlock(&ctx->sync_tlb_lock);
+	}
+}
+
 void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
 {
+	struct mm_context *ctx = container_of(mm_id, struct mm_context, id);
+	struct mm_struct *mm = container_of(ctx, struct mm_struct, context);
+
 	__this_cpu_write(running_stub, NULL);
+	userspace_running(mm_id, st);
+	if (use_mt_stub())
+		cpumask_clear_cpu(smp_processor_id(), mm_cpumask(mm));
 	preempt_enable();
 	exit_turnstile(mm_id);
 }
