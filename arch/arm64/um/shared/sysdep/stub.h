@@ -158,20 +158,21 @@ static __always_inline void trap_myself(void)
 }
 
 /*
- * The stub data page sits directly above the stub code page; adrp
- * yields the current page, add one page size.
+ * Each stub thread runs its signal handlers on the sigaltstack inside its own
+ * struct stub_data, so the data area is found from the stack pointer: the
+ * first data slot sits directly above the stub code page, which adrp finds
+ * (adrp yields the 4 KiB page of the PC, so round down to the kernel's page
+ * size for 16K pages).
  */
 static __always_inline void *get_stub_data(void)
 {
-	unsigned long ret;
+	unsigned long base, sp;
 
-	asm volatile (
-		"adrp %0, . ;"
-		"add %0, %0, %1 ;"
-		: "=&r" (ret)
-		: "r" (UM_KERN_PAGE_SIZE));
+	asm volatile ("adrp %0, ." : "=r" (base));
+	asm volatile ("mov %0, sp" : "=r" (sp));
+	base = (base & ~(UM_KERN_PAGE_SIZE - 1)) + UM_KERN_PAGE_SIZE;
 
-	return (void *)ret;
+	return (void *)(base + (sp - base) / STUB_SLOT_SIZE * STUB_SLOT_SIZE);
 }
 
 /*
