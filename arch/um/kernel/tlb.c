@@ -40,32 +40,53 @@ static int kern_unmap(struct mm_id *mm_idp,
 	return os_unmap_memory((void *)virt, len);
 }
 
-static inline int update_pte_range(pmd_t *pmd, unsigned long addr,
+/*
+ * The page tables are walked without the page table locks, like a hardware
+ * walker would: other CPUs may change entries under their (split) locks
+ * meanwhile. Each entry is read once, the host is updated from that snapshot,
+ * and _PAGE_NEEDSYNC is then only cleared if the entry still holds the
+ * snapshot. Every update of an entry sets _PAGE_NEEDSYNC again (set_pte(),
+ * pte_clear(), pmd_clear(), ...), and is followed by marking the range
+ * (set_ptes() or a TLB flush), which takes sync_tlb_lock and so waits for
+ * this walk; so a lost race only means the entry is synced again later.
+ *
+ * Page table pages are only freed after a TLB flush of their range, which
+ * also takes sync_tlb_lock, so they cannot go away during a walk.
+ */
+static inline void entry_mkuptodate(unsigned long *entry, unsigned long val)
+{
+	cmpxchg(entry, val, val & ~_PAGE_NEEDSYNC);
+}
+
+static inline int update_pte_range(pmd_t pmdval, unsigned long addr,
 				   unsigned long end,
 				   struct vm_ops *ops)
 {
 	pte_t *pte;
 	int ret = 0;
 
-	pte = pte_offset_kernel(pmd, addr);
+	pte = (pte_t *)pmd_page_vaddr(pmdval) + pte_index(addr);
 	do {
-		if (!pte_needsync(*pte))
+		pte_t val = ptep_get(pte);
+
+		if (!pte_needsync(val))
 			continue;
 
-		if (pte_present(*pte)) {
+		if (pte_present(val)) {
 			__u64 offset;
-			unsigned long phys = pte_val(*pte) & PAGE_MASK;
+			unsigned long phys = pte_val(val) & PAGE_MASK;
 			int fd = phys_mapping(phys, &offset);
 			int r, w, x, prot;
 
-			r = pte_read(*pte);
-			w = pte_write(*pte);
-			x = pte_exec(*pte);
-			if (!pte_young(*pte)) {
+			r = pte_read(val);
+			w = pte_write(val);
+			x = pte_exec(val);
+			if (!pte_young(val)) {
 				r = 0;
 				w = 0;
-			} else if (!pte_dirty(*pte))
+			} else if (!pte_dirty(val)) {
 				w = 0;
+			}
 
 			prot = (r ? UM_PROT_READ : 0) |
 			       (w ? UM_PROT_WRITE : 0) |
@@ -76,53 +97,84 @@ static inline int update_pte_range(pmd_t *pmd, unsigned long addr,
 		} else
 			ret = ops->unmap(ops->mm_idp, addr, PAGE_SIZE);
 
-		*pte = pte_mkuptodate(*pte);
+		entry_mkuptodate(&pte_val(*pte), pte_val(val));
 	} while (pte++, addr += PAGE_SIZE, ((addr < end) && !ret));
 	return ret;
 }
 
-static inline int update_pmd_range(pud_t *pud, unsigned long addr,
-				   unsigned long end,
+/*
+ * Folded levels have no table of their own: the entry of a folded level is
+ * the one of the next level, at the same place. Real levels are reached from
+ * the snapshot of the entry above, which may have changed meanwhile.
+ */
+static inline pud_t *pud_entry_ptr(p4d_t *p4dp, p4d_t p4dval,
+				   unsigned long addr)
+{
+#ifdef __PAGETABLE_PUD_FOLDED
+	return pud_offset(p4dp, addr);
+#else
+	return p4d_pgtable(p4dval) + pud_index(addr);
+#endif
+}
+
+static inline pmd_t *pmd_entry_ptr(pud_t *pudp, pud_t pudval,
+				   unsigned long addr)
+{
+#ifdef __PAGETABLE_PMD_FOLDED
+	return pmd_offset(pudp, addr);
+#else
+	return pud_pgtable(pudval) + pmd_index(addr);
+#endif
+}
+
+static inline int update_pmd_range(pud_t *pudp, pud_t pudval,
+				   unsigned long addr, unsigned long end,
 				   struct vm_ops *ops)
 {
 	pmd_t *pmd;
 	unsigned long next;
 	int ret = 0;
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_entry_ptr(pudp, pudval, addr);
 	do {
+		pmd_t val = READ_ONCE(*pmd);
+
 		next = pmd_addr_end(addr, end);
-		if (!pmd_present(*pmd)) {
-			if (pmd_needsync(*pmd)) {
+		if (!pmd_present(val)) {
+			if (pmd_needsync(val)) {
 				ret = ops->unmap(ops->mm_idp, addr,
 						 next - addr);
-				pmd_mkuptodate(*pmd);
+				entry_mkuptodate(&pmd_val(*pmd), pmd_val(val));
 			}
+		} else {
+			ret = update_pte_range(val, addr, next, ops);
 		}
-		else ret = update_pte_range(pmd, addr, next, ops);
 	} while (pmd++, addr = next, ((addr < end) && !ret));
 	return ret;
 }
 
-static inline int update_pud_range(p4d_t *p4d, unsigned long addr,
-				   unsigned long end,
+static inline int update_pud_range(p4d_t *p4dp, p4d_t p4dval,
+				   unsigned long addr, unsigned long end,
 				   struct vm_ops *ops)
 {
 	pud_t *pud;
 	unsigned long next;
 	int ret = 0;
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_entry_ptr(p4dp, p4dval, addr);
 	do {
+		pud_t val = READ_ONCE(*pud);
+
 		next = pud_addr_end(addr, end);
-		if (!pud_present(*pud)) {
-			if (pud_needsync(*pud)) {
+		if (!pud_present(val)) {
+			if (pud_needsync(val)) {
 				ret = ops->unmap(ops->mm_idp, addr,
 						 next - addr);
-				pud_mkuptodate(*pud);
+				entry_mkuptodate(&pud_val(*pud), pud_val(val));
 			}
+		} else {
+			ret = update_pmd_range(pud, val, addr, next, ops);
 		}
-		else ret = update_pmd_range(pud, addr, next, ops);
 	} while (pud++, addr = next, ((addr < end) && !ret));
 	return ret;
 }
@@ -137,40 +189,30 @@ static inline int update_p4d_range(pgd_t *pgd, unsigned long addr,
 
 	p4d = p4d_offset(pgd, addr);
 	do {
+		p4d_t val = READ_ONCE(*p4d);
+
 		next = p4d_addr_end(addr, end);
-		if (!p4d_present(*p4d)) {
-			if (p4d_needsync(*p4d)) {
+		if (!p4d_present(val)) {
+			if (p4d_needsync(val)) {
 				ret = ops->unmap(ops->mm_idp, addr,
 						 next - addr);
-				p4d_mkuptodate(*p4d);
+				entry_mkuptodate(&p4d_val(*p4d), p4d_val(val));
 			}
-		} else
-			ret = update_pud_range(p4d, addr, next, ops);
+		} else {
+			ret = update_pud_range(p4d, val, addr, next, ops);
+		}
 	} while (p4d++, addr = next, ((addr < end) && !ret));
 	return ret;
 }
 
-int um_tlb_sync(struct mm_struct *mm)
+static int __um_tlb_sync(struct mm_struct *mm, struct vm_ops *ops)
 {
 	pgd_t *pgd;
-	struct vm_ops ops;
 	unsigned long addr, next;
 	int ret = 0;
 
-	guard(spinlock_irqsave)(&mm->page_table_lock);
-	guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
-
 	if (mm->context.sync_tlb_range_to == 0)
 		return 0;
-
-	ops.mm_idp = &mm->context.id;
-	if (mm == &init_mm) {
-		ops.mmap = kern_map;
-		ops.unmap = kern_unmap;
-	} else {
-		ops.mmap = map;
-		ops.unmap = unmap;
-	}
 
 	addr = mm->context.sync_tlb_range_from;
 	pgd = pgd_offset(mm, addr);
@@ -178,12 +220,12 @@ int um_tlb_sync(struct mm_struct *mm)
 		next = pgd_addr_end(addr, mm->context.sync_tlb_range_to);
 		if (!pgd_present(*pgd)) {
 			if (pgd_needsync(*pgd)) {
-				ret = ops.unmap(ops.mm_idp, addr,
-						next - addr);
+				ret = ops->unmap(ops->mm_idp, addr,
+						 next - addr);
 				pgd_mkuptodate(*pgd);
 			}
 		} else
-			ret = update_p4d_range(pgd, addr, next, &ops);
+			ret = update_p4d_range(pgd, addr, next, ops);
 	} while (pgd++, addr = next,
 		 ((addr < mm->context.sync_tlb_range_to) && !ret));
 
@@ -194,6 +236,29 @@ int um_tlb_sync(struct mm_struct *mm)
 	mm->context.sync_tlb_range_to = 0;
 
 	return ret;
+}
+
+int um_tlb_sync(struct mm_struct *mm)
+{
+	struct vm_ops ops;
+
+	if (mm != &init_mm) {
+		ops.mm_idp = &mm->context.id;
+		ops.mmap = map;
+		ops.unmap = unmap;
+
+		guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
+		return __um_tlb_sync(mm, &ops);
+	}
+
+	ops.mm_idp = NULL;
+	ops.mmap = kern_map;
+	ops.unmap = kern_unmap;
+
+	guard(spinlock_irqsave)(&mm->page_table_lock);
+	guard(spinlock_irqsave)(&mm->context.sync_tlb_lock);
+
+	return __um_tlb_sync(mm, &ops);
 }
 
 void flush_tlb_all(void)
