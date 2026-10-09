@@ -97,6 +97,8 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 	return 0;
 
  out_free:
+	scoped_guard(spinlock_irqsave, &mm_list_lock)
+		list_del(&mm->context.list);
 	free_pages(new_id->stack, ilog2(STUB_DATA_PAGES));
  out:
 	return ret;
