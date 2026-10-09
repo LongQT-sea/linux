@@ -6,6 +6,8 @@
 #include <linux/log2.h>
 #include <linux/mutex.h>
 #include <linux/panic.h>
+#include <linux/percpu.h>
+#include <linux/preempt.h>
 #include <linux/smp.h>
 #include <linux/threads.h>
 #include <as-layout.h>
@@ -41,6 +43,32 @@ void exit_turnstile(struct mm_id *mm_id)
 	mutex_unlock(__get_turnstile(mm_id));
 }
 
+static DEFINE_PER_CPU(struct stub_thread *, running_stub);
+
+struct stub_thread *enter_userspace(struct mm_id *mm_id)
+{
+	enter_turnstile(mm_id);
+	preempt_disable();
+	__this_cpu_write(running_stub, &mm_id->main);
+
+	return &mm_id->main;
+}
+
+void leave_userspace(struct mm_id *mm_id, struct stub_thread *st)
+{
+	__this_cpu_write(running_stub, NULL);
+	preempt_enable();
+	exit_turnstile(mm_id);
+}
+
+void um_kick_userspace(void)
+{
+	struct stub_thread *st = __this_cpu_read(running_stub);
+
+	if (st)
+		stub_thread_kick(st);
+}
+
 unsigned long current_stub_stack(void)
 {
 	return this_runner()->mm_id.main.stack;
@@ -49,10 +77,6 @@ unsigned long current_stub_stack(void)
 struct mm_id *current_mm_id(void)
 {
 	return &this_runner()->mm_id;
-}
-
-void current_mm_sync(void)
-{
 }
 
 static int __init nommu_start_runners(void)

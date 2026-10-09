@@ -572,6 +572,15 @@ out_close:
 	return err;
 }
 
+/* Interrupt a stub thread that may be running userspace */
+void stub_thread_kick(struct stub_thread *st)
+{
+	if (st->mm->pid <= 0 || st->tid <= 0)
+		return;
+
+	syscall(__NR_tgkill, st->mm->pid, st->tid, SIGALRM);
+}
+
 static int unscheduled_userspace_iterations;
 extern unsigned long tt_extra_sched_jiffies;
 
@@ -587,13 +596,14 @@ void userspace(struct uml_pt_regs *regs)
 
 	while (1) {
 		struct mm_id *mm_id = current_mm_id();
+		struct stub_thread *st;
 
 		/*
-		 * At any given time, only one CPU thread can enter the
-		 * turnstile to operate on the same stub process, including
-		 * executing stub system calls (mmap and munmap).
+		 * Pick the stub thread to run on, and serialise against other
+		 * CPUs using the same stub process. Preemption is disabled
+		 * until leave_userspace().
 		 */
-		enter_turnstile(mm_id);
+		st = enter_userspace(mm_id);
 
 		/*
 		 * When we are in time-travel mode, userspace can theoretically
@@ -620,17 +630,14 @@ void userspace(struct uml_pt_regs *regs)
 
 		time_travel_print_bc_msg();
 
-		current_mm_sync();
-
 		if (using_seccomp) {
-			struct stub_thread *st = &mm_id->main;
 			struct stub_data *proc_data = (void *)st->stack;
 
 			err = set_stub_state(regs, proc_data, singlestepping());
 			if (err) {
 				printk(UM_KERN_ERR "%s - failed to set regs: %d",
 				       __func__, err);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			/* Must have been reset by the syscall caller */
@@ -641,7 +648,7 @@ void userspace(struct uml_pt_regs *regs)
 			proc_data->syscall_data_len = st->syscall_data_len;
 
 			if (wait_stub_done_seccomp(st, 0, 0, 0))
-				fatal_sigsegv();
+				goto fatal;
 
 			sig = proc_data->signal;
 
@@ -650,7 +657,7 @@ void userspace(struct uml_pt_regs *regs)
 				       __func__);
 				syscall_stub_dump_error(st);
 				st->syscall_data_len = proc_data->err;
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			st->syscall_data_len = 0;
@@ -660,7 +667,7 @@ void userspace(struct uml_pt_regs *regs)
 			if (err) {
 				printk(UM_KERN_ERR "%s - failed to get regs: %d",
 				       __func__, err);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			if (proc_data->si_offset > sizeof(proc_data->sigstack) - sizeof(*si))
@@ -682,14 +689,14 @@ void userspace(struct uml_pt_regs *regs)
 			int pid = mm_id->pid;
 
 			/* Flush out any pending syscalls */
-			err = syscall_stub_flush(&mm_id->main);
+			err = syscall_stub_flush(st);
 			if (err) {
 				if (err == -ENOMEM)
 					report_enomem();
 
 				printk(UM_KERN_ERR "%s - Error flushing stub syscalls: %d",
 					__func__, -err);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			/*
@@ -703,13 +710,13 @@ void userspace(struct uml_pt_regs *regs)
 			if (ptrace(PTRACE_SETREGS, pid, 0, regs->gp)) {
 				printk(UM_KERN_ERR "%s - ptrace set regs failed, errno = %d\n",
 				       __func__, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			if (put_fp_registers(pid, regs->fp)) {
 				printk(UM_KERN_ERR "%s - ptrace set fp regs failed, errno = %d\n",
 				       __func__, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			if (singlestepping())
@@ -720,27 +727,27 @@ void userspace(struct uml_pt_regs *regs)
 			if (ptrace(op, pid, 0, 0)) {
 				printk(UM_KERN_ERR "%s - ptrace continue failed, op = %d, errno = %d\n",
 				       __func__, op, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			CATCH_EINTR(err = waitpid(pid, &status, WUNTRACED | __WALL));
 			if (err < 0) {
 				printk(UM_KERN_ERR "%s - wait failed, errno = %d\n",
 				       __func__, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			regs->is_user = 1;
 			if (ptrace(PTRACE_GETREGS, pid, 0, regs->gp)) {
 				printk(UM_KERN_ERR "%s - PTRACE_GETREGS failed, errno = %d\n",
 				       __func__, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			if (get_fp_registers(pid, regs->fp)) {
 				printk(UM_KERN_ERR "%s -  get_fp_registers failed, errno = %d\n",
 				       __func__, errno);
-				fatal_sigsegv();
+				goto fatal;
 			}
 
 			if (WIFSTOPPED(status)) {
@@ -775,7 +782,7 @@ void userspace(struct uml_pt_regs *regs)
 			}
 		}
 
-		exit_turnstile(mm_id);
+		leave_userspace(mm_id, st);
 
 		UPT_SYSCALL_NR(regs) = -1; /* Assume: It's not a syscall */
 
@@ -821,6 +828,11 @@ void userspace(struct uml_pt_regs *regs)
 			if (PT_SYSCALL_NR_OFFSET != PT_SYSCALL_RET_OFFSET)
 				PT_SYSCALL_NR(regs->gp) = -1;
 		}
+		continue;
+
+fatal:
+		leave_userspace(mm_id, st);
+		fatal_sigsegv();
 	}
 }
 

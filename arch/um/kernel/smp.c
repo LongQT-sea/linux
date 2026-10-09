@@ -66,8 +66,7 @@ static void ipi_handler(int vector, struct uml_pt_regs *regs)
 
 	irq_enter();
 
-	if (current->mm)
-		os_alarm_process(current_mm_id()->pid);
+	um_kick_userspace();
 
 	switch (vector) {
 	case UML_IPI_RES:

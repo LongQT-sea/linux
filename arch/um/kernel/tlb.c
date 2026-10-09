@@ -260,12 +260,16 @@ static int __um_tlb_sync(struct mm_struct *mm, struct vm_ops *ops)
 	return ret;
 }
 
-int um_tlb_sync(struct mm_struct *mm)
+/*
+ * Replay pending page table changes of @mm onto the host: directly for the
+ * kernel (init_mm), else by queueing mmap/munmap requests to stub thread @st.
+ */
+int um_tlb_sync(struct mm_struct *mm, struct stub_thread *st)
 {
 	struct vm_ops ops;
 
 	if (mm != &init_mm) {
-		ops.st = &mm->context.id.main;
+		ops.st = st;
 		ops.mmap = map;
 		ops.unmap = unmap;
 

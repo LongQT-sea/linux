@@ -22,14 +22,6 @@
 #include <os.h>
 #include <skas/skas.h>
 
-void os_alarm_process(int pid)
-{
-	if (pid <= 0)
-		return;
-
-	kill(pid, SIGALRM);
-}
-
 void os_kill_process(int pid, int reap_child)
 {
 	if (pid <= 0)

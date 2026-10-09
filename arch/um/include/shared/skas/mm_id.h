@@ -43,4 +43,7 @@ void exit_turnstile(struct mm_id *mm_id) __releases(__get_turnstile(mm_id));
 
 void notify_mm_kill(int pid);
 
+struct stub_thread *enter_userspace(struct mm_id *mm_id);
+void leave_userspace(struct mm_id *mm_id, struct stub_thread *st);
+
 #endif
