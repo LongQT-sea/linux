@@ -115,6 +115,22 @@ config SMP
 	  across different processes, but remains limited within threads
 	  of the same process in userspace.
 
+config UML_MT_STUB
+	bool "Run userspace threads of one process on several CPUs"
+	depends on SMP && MMU && X86_64
+	default y
+	help
+	  Without this option, all threads of a userspace process share the
+	  single host thread of their stub process, so only one of them can
+	  run userspace code at a time.
+
+	  With it, the stub process gets one host thread per virtual
+	  processor on which the process runs, so threads of the same
+	  process run in parallel. This needs SECCOMP userspace and more
+	  than one virtual processor; otherwise the old scheme is used.
+
+	  If unsure, say Y.
+
 config NR_CPUS_RANGE_BEGIN
 	int
 	default 1 if !SMP

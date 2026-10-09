@@ -23,6 +23,10 @@
 # endif
 #endif
 
+/* Flags for STUB_SYSCALL_CLONE, also checked by the seccomp filter */
+#define STUB_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | \
+			  CLONE_THREAD | CLONE_SYSVSEM)
+
 #define FUTEX_IN_CHILD 0
 #define FUTEX_IN_KERN 1
 
@@ -47,6 +51,7 @@ enum stub_syscall_type {
 	STUB_SYSCALL_UNSET = 0,
 	STUB_SYSCALL_MMAP,
 	STUB_SYSCALL_MUNMAP,
+	STUB_SYSCALL_CLONE,
 };
 
 struct stub_syscall {
@@ -77,6 +82,9 @@ struct stub_data {
 
 	/* seccomp architecture specific state restore */
 	struct stub_data_arch arch_data;
+
+	/* host thread ID, filled in by a thread created with STUB_SYSCALL_CLONE */
+	int tid;
 
 	/* Stack for our signal handlers and for calling into . */
 	unsigned char sigstack[UM_KERN_PAGE_SIZE] __aligned(UM_KERN_PAGE_SIZE);

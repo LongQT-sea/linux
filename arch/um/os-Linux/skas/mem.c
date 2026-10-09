@@ -278,3 +278,15 @@ int unmap(struct stub_thread *st, unsigned long addr, unsigned long len)
 	return 0;
 }
 
+#ifdef CONFIG_UML_MT_STUB
+/* Queue the creation of a thread that uses the data area in @slot */
+void stub_thread_clone(struct stub_thread *st, int slot)
+{
+	struct stub_syscall *sc;
+
+	sc = syscall_stub_alloc(st);
+	sc->syscall = STUB_SYSCALL_CLONE;
+	sc->mem.addr = STUB_SLOT_DATA(slot);
+	sc->mem.length = STUB_SLOT_SIZE;
+}
+#endif

@@ -579,6 +579,7 @@ int start_userspace(struct mm_id *mm_id)
 	}
 
 	mm_id->main.mm = mm_id;
+	mm_id->main.slot = 0;
 	mm_id->main.tid = mm_id->pid;
 
 	if (using_seccomp) {
@@ -639,6 +640,47 @@ out_close:
 
 	return err;
 }
+
+#ifdef CONFIG_UML_MT_STUB
+/**
+ * start_stub_thread() - create another host thread in a stub process
+ * @st: The new thread, with st->mm, st->slot and st->stack set up
+ *
+ * The thread that exec()ed the stub maps the data area of @st into its slot
+ * and clones the new thread, which then waits in its signal handler until it
+ * is told to run userspace.
+ *
+ * Return: 0 on success, a negative error code otherwise.
+ */
+int start_stub_thread(struct stub_thread *st)
+{
+	struct stub_thread *main = &st->mm->main;
+	struct stub_data *data = (void *)st->stack;
+	unsigned long long offset;
+	int fd, err;
+
+	data->futex = FUTEX_IN_CHILD;
+	fd = phys_mapping(uml_to_phys(data), &offset);
+
+	map(main, STUB_SLOT_DATA(st->slot), STUB_SLOT_SIZE,
+	    UM_PROT_READ | UM_PROT_WRITE, fd, offset);
+	stub_thread_clone(main, st->slot);
+
+	err = syscall_stub_flush(main);
+	if (err)
+		return err;
+
+	if (wait_stub_done_seccomp(st, 1, 0, 1))
+		return -EIO;
+
+	/* Negative if the thread could not set up its signal stack */
+	if (data->tid <= 0)
+		return -EIO;
+	st->tid = data->tid;
+
+	return 0;
+}
+#endif
 
 /* Interrupt a stub thread that may be running userspace */
 void stub_thread_kick(struct stub_thread *st)
