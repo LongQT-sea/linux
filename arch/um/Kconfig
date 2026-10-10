@@ -233,6 +233,7 @@ config KERNEL_STACK_ORDER
 	int "Kernel stack size order"
 	default 3 if !MMU
 	range 3 10 if !MMU
+	default 3 if 64BIT && KASAN
 	default 2 if 64BIT
 	range 2 10 if 64BIT
 	default 1 if !64BIT
