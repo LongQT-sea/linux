@@ -362,6 +362,13 @@ int os_send_ipi(int cpu, int vector);
 unsigned int os_take_pending_ipis(void);
 void os_run_ipis(unsigned int vectors);
 void os_mark_ipi_pending(void);
+void os_pin_stub_thread(int pid, int tid, int cpu);
+void os_affinity_widen(void);
+void os_affinity_restore(void);
+#else /* !CONFIG_SMP */
+static inline void os_pin_stub_thread(int pid, int tid, int cpu) { }
+static inline void os_affinity_widen(void) { }
+static inline void os_affinity_restore(void) { }
 #endif /* CONFIG_SMP */
 
 #endif

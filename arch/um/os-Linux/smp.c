@@ -5,13 +5,118 @@
  */
 
 #include <errno.h>
+#include <stdio.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #include <kern_util.h>
 #include <init.h>
 #include <os.h>
 #include <smp.h>
 #include "internal.h"
+
+/*
+ * vcpu_affinity=: the host CPU each virtual CPU runs on. A virtual CPU is two
+ * kinds of host threads: its own, and the stub threads that run userspace for
+ * it. They hand over to each other on every system call, fault and tick, which
+ * is cheap on one host CPU and costly across CPUs, so both go on the same one.
+ * Other host threads and processes (stub processes, helpers) may run on any
+ * of the listed CPUs.
+ */
+static int vcpu_host_cpu[CONFIG_NR_CPUS];
+static int vcpu_host_cpus;
+static cpu_set_t vcpu_host_set;
+
+static int __init vcpu_affinity_setup(char *line, int *add)
+{
+	char *p = line, *end;
+	long c;
+
+	*add = 0;
+	CPU_ZERO(&vcpu_host_set);
+	vcpu_host_cpus = 0;
+	while (vcpu_host_cpus < CONFIG_NR_CPUS) {
+		c = strtol(p, &end, 10);
+		if (end == p || c < 0 || c >= CPU_SETSIZE) {
+			os_warn("vcpu_affinity=: bad host CPU list '%s', ignored\n",
+				line);
+			vcpu_host_cpus = 0;
+			return 0;
+		}
+		vcpu_host_cpu[vcpu_host_cpus++] = c;
+		CPU_SET(c, &vcpu_host_set);
+		if (*end != ',')
+			break;
+		p = end + 1;
+	}
+	return 0;
+}
+
+__uml_setup("vcpu_affinity=", vcpu_affinity_setup,
+"vcpu_affinity=<host cpu>,<host cpu>,...\n"
+"    Run virtual CPU 0 on the first host CPU listed, CPU 1 on the second, and\n"
+"    so on, together with the stub threads that run userspace for them.\n"
+"    Virtual CPUs beyond the list, and everything else, run on any of the\n"
+"    listed host CPUs.\n\n"
+);
+
+static void set_affinity(int tid, int cpu)
+{
+	static bool warned;
+	cpu_set_t set;
+
+	if (!vcpu_host_cpus)
+		return;
+	if (cpu >= 0 && cpu < vcpu_host_cpus) {
+		CPU_ZERO(&set);
+		CPU_SET(vcpu_host_cpu[cpu], &set);
+	} else {
+		set = vcpu_host_set;
+	}
+	/* The raw call: the kernel has a sched_setaffinity() of its own */
+	if (syscall(__NR_sched_setaffinity, tid, sizeof(set), &set) < 0 &&
+	    !warned) {
+		warned = true;
+		os_warn("vcpu_affinity: cannot set the affinity of thread %d, errno = %d (host CPU not allowed?)\n",
+			tid ? tid : (int)syscall(__NR_gettid), errno);
+	}
+}
+
+/*
+ * Pin the stub thread @tid of stub process @pid that runs userspace for CPU
+ * @cpu. The thread reported its tid through stub data, which guest code in
+ * other threads of the process can write: only pin a thread of that process.
+ */
+void os_pin_stub_thread(int pid, int tid, int cpu)
+{
+	char path[64];
+
+	if (!vcpu_host_cpus)
+		return;
+	snprintf(path, sizeof(path), "/proc/%d/task/%d", pid, tid);
+	if (access(path, F_OK))
+		return;
+	set_affinity(tid, cpu);
+}
+
+/*
+ * Host threads and processes inherit the affinity of the CPU thread that
+ * creates them: let this one run anywhere while it creates something that is
+ * not tied to it, and come back afterwards.
+ */
+void os_affinity_widen(void)
+{
+	set_affinity(0, -1);
+}
+
+void os_affinity_restore(void)
+{
+	set_affinity(0, uml_curr_cpu());
+}
 
 struct cpu_thread_data {
 	int cpu;
@@ -39,6 +144,7 @@ static void *cpu_thread(void *arg)
 	struct cpu_thread_data *data = arg;
 
 	__curr_cpu = data->cpu;
+	set_affinity(0, data->cpu);
 
 	uml_start_secondary(data);
 
@@ -159,4 +265,5 @@ void __init os_init_smp(void)
 		panic("%s: sigaction failed, errno = %d", __func__, errno);
 
 	cpu_threads[0] = pthread_self();
+	set_affinity(0, 0);
 }

@@ -649,9 +649,12 @@ int start_userspace(struct mm_id *mm_id)
 	if (using_seccomp)
 		proc_data->futex = FUTEX_IN_CHILD;
 
+	/* The stub process serves all CPUs: not only this one's host CPU */
+	os_affinity_widen();
 	mm_id->pid = clone(userspace_tramp, (void *) sp,
 		    CLONE_VFORK | CLONE_VM | SIGCHLD,
 		    (void *)&tramp_data);
+	os_affinity_restore();
 	if (mm_id->pid < 0) {
 		err = -errno;
 		printk(UM_KERN_ERR "%s : clone failed, errno = %d\n",
@@ -758,6 +761,9 @@ int start_stub_thread(struct stub_thread *st)
 	if (data->tid <= 0)
 		return -EIO;
 	st->tid = data->tid;
+
+	/* It runs userspace for one CPU: on that CPU's host CPU */
+	os_pin_stub_thread(st->mm->pid, st->tid, st->slot - 1);
 
 	return 0;
 }

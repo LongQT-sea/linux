@@ -73,7 +73,9 @@ int run_helper(void (*pre_exec)(void *), void *pre_data, char **argv)
 	data.fd = fds[1];
 	data.buf = __uml_cant_sleep() ? uml_kmalloc(PATH_MAX, UM_GFP_ATOMIC) :
 					uml_kmalloc(PATH_MAX, UM_GFP_KERNEL);
+	os_affinity_widen();
 	pid = clone(helper_child, (void *) sp, CLONE_VM, &data);
+	os_affinity_restore();
 	if (pid < 0) {
 		ret = -errno;
 		printk(UM_KERN_ERR "run_helper : clone failed, errno = %d\n",
@@ -131,7 +133,9 @@ int run_helper_thread(int (*proc)(void *), void *arg, unsigned int flags,
 		return -ENOMEM;
 
 	sp = stack + UM_KERN_PAGE_SIZE;
+	os_affinity_widen();
 	pid = clone(proc, (void *) sp, flags, arg);
+	os_affinity_restore();
 	if (pid < 0) {
 		err = -errno;
 		printk(UM_KERN_ERR "run_helper_thread : clone failed, "
@@ -196,7 +200,9 @@ int os_run_helper_thread(struct os_helper_thread **td_out,
 		return err;
 	}
 
+	os_affinity_widen();
 	err = pthread_create(&td->handle, NULL, routine, arg);
+	os_affinity_restore();
 
 	if (sigprocmask(SIG_SETMASK, &oset, NULL) < 0)
 		panic("Failed to restore the signal mask: %d", errno);
